@@ -6,6 +6,12 @@ data:
   # === NOUVEAU : Réglage du bruit pour le Denoising ===
   noise_level: 0.15    # Quantité de bruit gaussien (0.0 à 1.0)
   max_height: 2048
+  # === AUGMENTATIONS (Web-safe) ===
+  augment: true                   # Activer/désactiver les augmentations pour le train
+  sp_prob: 0.02                   # Probabilité (par pixel) de salt-and-pepper
+  random_erasing_prob: 0.5        # Probabilité d'appliquer RandomErasing sur l'input
+  perspective_p: 0.3              # Probabilité d'appliquer RandomPerspective
+  perspective_distortion_scale: 0.08
 
 model:
   name: "vae"
@@ -15,7 +21,7 @@ model:
 
 # === NOUVELLE SECTION LOSS ===
 loss:
-  name: "l1"         # Options: "l1", "mse", "perceptual"
+  name: "perceptual"         # Options: "l1", "mse", "perceptual"
   beta_kld: 0.001    # Poids de la régularisation KL
   # KL Annealing : Nombre d'époques pour passer de Beta=0 à Beta_target
   # Mettez 0 pour désactiver l'annealing.
@@ -29,6 +35,15 @@ optim:
     weight_decay: 0.00001
   epochs: 100
   beta_kld: 0.001 # Poids de la perte KL (commence bas)
+
+# === OPTIMIZATION (Gradient accumulation configurable) ===
+optimization:
+  lr: 0.0005
+  epochs: 100
+  weight_decay: 0.00001
+  # Définit combien d'images on traite avant de mettre à jour les poids.
+  # Comme `batch_size` réel est souvent 1, ceci définit votre batch virtuel.
+  accumulation_steps: 64
 
 # Logging / monitoring (minimal). The trainer expects a `logging` section.
 logging:

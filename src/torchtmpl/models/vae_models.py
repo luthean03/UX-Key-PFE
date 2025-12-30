@@ -22,26 +22,66 @@ class SPPLayer(nn.Module):
         return torch.cat(features, dim=1)
 
 
+class CBAM(nn.Module):
+    """Module d'Attention (Channel + Spatial) pour affiner les features"""
+    def __init__(self, channels, reduction=16):
+        super(CBAM, self).__init__()
+        # Channel Attention
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, channels // reduction, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(channels // reduction, channels, 1, bias=False)
+        )
+        self.sigmoid_channel = nn.Sigmoid()
+        
+        # Spatial Attention
+        self.conv_spatial = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
+        self.sigmoid_spatial = nn.Sigmoid()
+
+    def forward(self, x):
+        # 1. Channel Attention (Qu'est-ce qui est important ?)
+        avg_out = self.fc(self.avg_pool(x))
+        max_out = self.fc(self.max_pool(x))
+        out = x * self.sigmoid_channel(avg_out + max_out)
+        
+        # 2. Spatial Attention (Où est-ce important ?)
+        avg_out = torch.mean(out, dim=1, keepdim=True)
+        max_out, _ = torch.max(out, dim=1, keepdim=True)
+        spatial_out = self.sigmoid_spatial(self.conv_spatial(torch.cat([avg_out, max_out], dim=1)))
+        
+        return out * spatial_out
+
 class ResidualBlock(nn.Module):
+    """Bloc ResNet Amélioré avec Attention CBAM"""
     def __init__(self, in_c, out_c, stride=1):
         super().__init__()
         self.conv1 = nn.Conv2d(in_c, out_c, 3, stride, 1, bias=False)
         self.gn1 = nn.GroupNorm(32, out_c)
         self.conv2 = nn.Conv2d(out_c, out_c, 3, 1, 1, bias=False)
         self.gn2 = nn.GroupNorm(32, out_c)
+        
+        # === AJOUT DE L'ATTENTION ===
+        self.cbam = CBAM(out_c)
+        # ============================
+        
         self.shortcut = nn.Sequential()
         if stride != 1 or in_c != out_c:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_c, out_c, 1, stride, bias=False),
-                nn.GroupNorm(32, out_c),
+                nn.GroupNorm(32, out_c)
             )
 
     def forward(self, x):
         out = F.relu(self.gn1(self.conv1(x)))
         out = self.gn2(self.conv2(out))
+        
+        # Application de l'attention avant l'addition
+        out = self.cbam(out)
+        
         out += self.shortcut(x)
         return F.relu(out)
-
 
 class VAE(nn.Module):
     def __init__(self, config, input_size, num_classes=0):

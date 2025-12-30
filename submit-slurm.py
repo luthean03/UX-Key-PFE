@@ -9,10 +9,12 @@ import shlex
 
 
 def makejob(commit_id, config_b64, nruns, command, extra_args: str = ""):
+    exclude_list = "dani[01-17],tx[00-16],sh[10-19],sh00"
     return f"""#!/bin/bash
 
 #SBATCH --job-name=vae-ux-key
 #SBATCH --nodes=1
+#SBATCH --exclude={exclude_list}
 #SBATCH --partition=gpu_prod_long
 #SBATCH --time=48:00:00
 #SBATCH --output=logslurms/slurm-%A_%a.out

@@ -14,6 +14,7 @@ import torchinfo.torchinfo as torchinfo
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import sys
+from torchmetrics.image import StructuralSimilarityIndexMeasure
 
 # Optional visualization dependencies (imported lazily)
 import matplotlib.pyplot as plt
@@ -29,6 +30,7 @@ from . import models
 from . import optim
 from . import utils
 from . import loss as loss_module
+
 
 
 def train(config):
@@ -175,9 +177,12 @@ def train(config):
 
         logging.info(f"Using VAE Loss: {loss_config.get('name')} with target_beta={target_beta} and warmup_epochs={warmup_epochs}")
 
-        # Gradient accumulation: simulate large batch size with batch_size=1 loaders
-        grad_accumulation_steps = int(config.get("grad_accumulation_steps", 64))
-        logging.info(f"Using gradient accumulation steps: {grad_accumulation_steps}")
+        # Gradient accumulation: read from configuration (section 'optimization')
+        optim_conf = config.get("optimization", {})
+        grad_accumulation_steps = int(
+            optim_conf.get("accumulation_steps", int(config.get("grad_accumulation_steps", 64)))
+        )
+        logging.info(f"Training with Gradient Accumulation Steps: {grad_accumulation_steps}")
 
         optimizer.zero_grad()
         for e in range(config["nepochs"]):
@@ -260,6 +265,9 @@ def train(config):
             model.eval()
             val_total = 0.0
             val_samples = 0
+            # SSIM metric for validation monitoring
+            ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
+            total_ssim = 0.0
             with torch.no_grad():
                 for (inputs, targets) in valid_loader:
                     inputs = inputs.to(device)
@@ -267,9 +275,17 @@ def train(config):
                     recon, mu, logvar = model(inputs)
                     total_loss, _, _ = criterion(recon, targets, mu, logvar)
                     val_total += total_loss.item()
+                    # Compute SSIM (robust to possible exceptions)
+                    try:
+                        ssim_val = ssim_metric(recon, targets)
+                        total_ssim += float(ssim_val) * inputs.shape[0]
+                    except Exception:
+                        pass
                     val_samples += inputs.shape[0]
 
             test_loss = val_total / max(1, val_samples)
+            avg_ssim = total_ssim / max(1, val_samples)
+            logging.info(f"Validation SSIM: {avg_ssim:.4f}")
 
             updated = model_checkpoint.update(test_loss)
             logging.info(
@@ -308,12 +324,16 @@ def train(config):
                 logging.debug("Could not save reconstruction image for epoch %d", e)
             # ===========================
 
-            metrics = {"train_ELBO": train_loss, "test_ELBO": test_loss}
+            metrics = {"train_ELBO": train_loss, "test_ELBO": test_loss, "test_SSIM": avg_ssim}
             if wandb_log is not None:
                 wandb_log(metrics)
             if writer is not None:
                 writer.add_scalar("train_ELBO", train_loss, e)
                 writer.add_scalar("test_ELBO", test_loss, e)
+                try:
+                    writer.add_scalar("test_SSIM", avg_ssim, e)
+                except Exception:
+                    pass
 
     else:
         for e in range(config["nepochs"]):
@@ -322,6 +342,30 @@ def train(config):
 
             # Test
             test_loss = utils.test(model, valid_loader, loss, device)
+
+            # Compute SSIM on the validation set for monitoring
+            try:
+                model.eval()
+                ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
+                total_ssim = 0.0
+                with torch.no_grad():
+                    for inputs, targets in valid_loader:
+                        inputs, targets = inputs.to(device), targets.to(device)
+                        out = model(inputs)
+                        # Handle different model output shapes (recon, (mu,logvar), etc.)
+                        if isinstance(out, (tuple, list)):
+                            recon = out[0]
+                        else:
+                            recon = out
+                        try:
+                            ssim_val = ssim_metric(recon, targets)
+                            total_ssim += float(ssim_val) * inputs.shape[0]
+                        except Exception:
+                            pass
+                avg_ssim = total_ssim / max(1, len(valid_loader.dataset))
+                logging.info(f"Validation SSIM: {avg_ssim:.4f}")
+            except Exception:
+                avg_ssim = None
 
             updated = model_checkpoint.update(test_loss)
             logging.info(
@@ -336,12 +380,19 @@ def train(config):
 
             # Update the dashboard
             metrics = {"train_CE": train_loss, "test_CE": test_loss}
+            if avg_ssim is not None:
+                metrics["test_SSIM"] = avg_ssim
             if wandb_log is not None:
                 logging.info("Logging on wandb")
                 wandb_log(metrics)
             if writer is not None:
                 writer.add_scalar("train_CE", train_loss, e)
                 writer.add_scalar("test_CE", test_loss, e)
+                if avg_ssim is not None:
+                    try:
+                        writer.add_scalar("test_SSIM", avg_ssim, e)
+                    except Exception:
+                        pass
 
     # === Latent space visualization helper ===
     def generate_latent_plot(model, dataloader, device, logdir, max_points=1000):

@@ -4,19 +4,37 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import os
 import torchvision.transforms.functional as TF
+import torchvision.transforms as T
 import random
+import logging
 
 Image.MAX_IMAGE_PIXELS = None 
 
 class VariableSizeDataset(Dataset):
-    def __init__(self, root_dir, noise_level=0.0, max_height=2048):
+    def __init__(self, root_dir, noise_level=0.0, max_height=2048, augment=False, files_list=None, sp_prob=0.02, perspective_p=0.3, perspective_distortion_scale=0.08, random_erasing_prob=0.5):
         self.root_dir = root_dir
-        self.files = [f for f in os.listdir(root_dir) if f.endswith('_linear.png')]
-        if len(self.files) == 0:
-            self.files = [f for f in os.listdir(root_dir) if f.lower().endswith('.png')]
-        
+        # Allow passing an explicit files list (used when splitting train/valid)
+        if files_list is not None:
+            self.files = list(files_list)
+        else:
+            self.files = [f for f in os.listdir(root_dir) if f.endswith('_linear.png')]
+            if len(self.files) == 0:
+                self.files = [f for f in os.listdir(root_dir) if f.lower().endswith('.png')]
+
         self.noise_level = float(noise_level)
-        self.max_height = max_height # Hauteur max autorisée (ex: 2048 px)
+        self.max_height = int(max_height) # Hauteur max autorisée (ex: 2048 px)
+        self.augment = bool(augment)
+        self.sp_prob = float(sp_prob)
+
+        # Read augmentation parameters (defaults kept for compatibility)
+        self.perspective_p = float(perspective_p)
+        self.perspective_distortion_scale = float(perspective_distortion_scale)
+        self.random_erasing_prob = float(random_erasing_prob)
+
+        # Pipeline d'augmentation "Web-Safe" (appliquée sur PIL images)
+        self.augment_transform = T.Compose([
+            T.RandomPerspective(distortion_scale=self.perspective_distortion_scale, p=self.perspective_p),
+        ])
 
     def __len__(self):
         return len(self.files)
@@ -34,9 +52,16 @@ class VariableSizeDataset(Dataset):
             clean_image = clean_image.crop((0, top, w, top + self.max_height))
         # ======================================
         
+        # === 2. DATA AUGMENTATION (Seulement pour le train) ===
+        if self.augment:
+            try:
+                clean_image = self.augment_transform(clean_image)
+            except Exception:
+                logging.debug("augment_transform failed for %s", img_path)
+
         clean_tensor = TF.to_tensor(clean_image)
 
-        # Ajout du bruit
+        # === 3. BRUIT GAUSSIEN (Denoising) ===
         if self.noise_level > 0.0:
             noise = torch.randn_like(clean_tensor) * self.noise_level
             noisy_tensor = clean_tensor + noise
@@ -44,24 +69,76 @@ class VariableSizeDataset(Dataset):
         else:
             noisy_tensor = clean_tensor.clone()
 
+        # === 4. RANDOM ERASING (Appliqué SUR L'INPUT pour inpainting robustness) ===
+        # We apply RandomErasing to the noisy input only (recommended).
+        if self.augment and random.random() < self.random_erasing_prob:
+            try:
+                eraser = T.RandomErasing(p=1.0, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0)
+                noisy_tensor = eraser(noisy_tensor)
+            except Exception:
+                logging.debug("RandomErasing failed for %s", img_path)
+
+        # === 5. SALT-AND-PEPPER (Poivre & Sel) ===
+        if self.augment and self.sp_prob > 0.0 and random.random() < 0.5:
+            try:
+                mask = torch.rand_like(noisy_tensor) < self.sp_prob
+                rnd = torch.rand_like(noisy_tensor)
+                noisy_tensor = noisy_tensor.clone()
+                noisy_tensor[mask & (rnd < 0.5)] = 0.0
+                noisy_tensor[mask & (rnd >= 0.5)] = 1.0
+            except Exception:
+                logging.debug("Salt-and-pepper failed for %s", img_path)
+
         return noisy_tensor, clean_tensor
 
 def get_dataloaders(data_config, use_cuda):
     noise = float(data_config.get("noise_level", 0.0))
     # On définit une limite de sécurité (2048 pixels de haut est suffisant pour apprendre les patterns)
     max_h = int(data_config.get("max_height", 2048))
-    
-    full_dataset = VariableSizeDataset(
-        root_dir=data_config.get('data_dir', './'), 
+    data_dir = data_config.get('data_dir', './')
+    files = [f for f in os.listdir(data_dir) if f.endswith('_linear.png')]
+    if len(files) == 0:
+        files = [f for f in os.listdir(data_dir) if f.lower().endswith('.png')]
+
+    # Shuffle and split files into train/valid so we can instantiate datasets
+    valid_ratio = float(data_config.get("valid_ratio", 0.2))
+    random.shuffle(files)
+    train_size = int((1.0 - valid_ratio) * len(files))
+    train_files = files[:train_size]
+    valid_files = files[train_size:]
+
+    # Read augmentation params from config (with defaults)
+    augment_flag = bool(data_config.get('augment', True))
+    sp_prob = float(data_config.get('sp_prob', 0.02))
+    random_erasing_prob = float(data_config.get('random_erasing_prob', data_config.get('random_erasing_p', 0.5)))
+    perspective_p = float(data_config.get('perspective_p', data_config.get('perspective_p', 0.3)))
+    perspective_distortion_scale = float(data_config.get('perspective_distortion_scale', 0.08))
+
+    # Create dataset instances with augment enabled for train and disabled for validation
+    train_dataset = VariableSizeDataset(
+        root_dir=data_dir,
         noise_level=noise,
-        max_height=max_h
+        max_height=max_h,
+        augment=augment_flag,
+        files_list=train_files,
+        sp_prob=sp_prob,
+        perspective_p=perspective_p,
+        perspective_distortion_scale=perspective_distortion_scale,
+        random_erasing_prob=random_erasing_prob,
+    )
+    valid_dataset = VariableSizeDataset(
+        root_dir=data_dir,
+        noise_level=0.0,
+        max_height=max_h,
+        augment=False,
+        files_list=valid_files,
+        sp_prob=0.0,
+        perspective_p=perspective_p,
+        perspective_distortion_scale=perspective_distortion_scale,
+        random_erasing_prob=0.0,
     )
 
-    train_size = int((1.0 - data_config.get("valid_ratio", 0.2)) * len(full_dataset))
-    valid_size = len(full_dataset) - train_size
-    train_dataset, valid_dataset = torch.utils.data.random_split(full_dataset, [train_size, valid_size])
-
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=0, pin_memory=use_cuda)
-    valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False, num_workers=0, pin_memory=use_cuda)
+    train_loader = DataLoader(train_dataset, batch_size=int(data_config.get('batch_size', 1)), shuffle=True, num_workers=0, pin_memory=use_cuda)
+    valid_loader = DataLoader(valid_dataset, batch_size=int(data_config.get('batch_size', 1)), shuffle=False, num_workers=0, pin_memory=use_cuda)
 
     return train_loader, valid_loader, (1, 0, 0), 0
