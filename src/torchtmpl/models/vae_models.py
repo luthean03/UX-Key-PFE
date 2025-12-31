@@ -105,7 +105,9 @@ class VAE(nn.Module):
         self.fc_mu = nn.Linear(self.spp_out_dim, self.latent_dim)
         self.fc_logvar = nn.Linear(self.spp_out_dim, self.latent_dim)
 
-        self.dec_h, self.dec_w = 32, 8
+        # Make decoder base more elongated to better match tall web pages
+        # (increase vertical resolution to reduce upsample distortion)
+        self.dec_h, self.dec_w = 64, 4
         self.dec_channels = 256
         self.fc_decode = nn.Linear(self.latent_dim, self.dec_channels * self.dec_h * self.dec_w)
 

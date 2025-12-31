@@ -102,6 +102,9 @@ def get_dataloaders(data_config, use_cuda):
 
     # Shuffle and split files into train/valid so we can instantiate datasets
     valid_ratio = float(data_config.get("valid_ratio", 0.2))
+    # Reproducible split: allow overriding via `seed` in config
+    seed = int(data_config.get('seed', 42))
+    random.seed(seed)
     random.shuffle(files)
     train_size = int((1.0 - valid_ratio) * len(files))
     train_files = files[:train_size]

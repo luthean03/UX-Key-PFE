@@ -9,7 +9,7 @@ data:
   # === AUGMENTATIONS (Web-safe) ===
   augment: true                   # Activer/désactiver les augmentations pour le train
   sp_prob: 0.02                   # Probabilité (par pixel) de salt-and-pepper
-  random_erasing_prob: 0.5        # Probabilité d'appliquer RandomErasing sur l'input
+  random_erasing_prob: 0.2       # Probabilité d'appliquer RandomErasing sur l'input
   perspective_p: 0.3              # Probabilité d'appliquer RandomPerspective
   perspective_distortion_scale: 0.08
 
@@ -22,6 +22,7 @@ model:
 # === NOUVELLE SECTION LOSS ===
 loss:
   name: "perceptual"         # Options: "l1", "mse", "perceptual"
+  perceptual_weight: 0.01    # Poids de la composante VGG (0.02-0.1 typiquement)
   beta_kld: 0.001    # Poids de la régularisation KL
   # KL Annealing : Nombre d'époques pour passer de Beta=0 à Beta_target
   # Mettez 0 pour désactiver l'annealing.
@@ -43,7 +44,7 @@ optimization:
   weight_decay: 0.00001
   # Définit combien d'images on traite avant de mettre à jour les poids.
   # Comme `batch_size` réel est souvent 1, ceci définit votre batch virtuel.
-  accumulation_steps: 64
+  accumulation_steps: 128
 
 # Logging / monitoring (minimal). The trainer expects a `logging` section.
 logging:
