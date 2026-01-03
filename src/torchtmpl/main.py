@@ -117,7 +117,9 @@ def train(config):
     model_is_vae = model_config.get("class", "").lower() == "vae" or model_config.get("type", "").lower() == "vae"
     loss = None
     if not model_is_vae:
-        loss = optim.get_loss(config["loss"])
+        loss_cfg = config["loss"]
+        loss_name = loss_cfg.get("name") if isinstance(loss_cfg, dict) else loss_cfg
+        loss = optim.get_loss(loss_name)
     loss_display = (
         config.get("loss", {"name": "l1", "beta_kld": config.get("optim", {}).get("beta_kld", 0.001)})
         if model_is_vae
@@ -128,6 +130,8 @@ def train(config):
     logging.info("= Optimizer")
     optim_config = config["optim"]
     optimizer = optim.get_optimizer(optim_config, model.parameters())
+
+    scheduler = optim.get_scheduler(optimizer, optim_config)
 
     # Logdir
     logging_config = config["logging"]
@@ -281,6 +285,28 @@ def train(config):
             logging.info(f"Validation SSIM: {avg_ssim:.4f}")
 
             updated = model_checkpoint.update(test_loss)
+
+            # === LR logging + scheduler step ===
+            current_lr = optimizer.param_groups[0].get("lr", None)
+            if current_lr is not None:
+                logging.info(f"Current Learning Rate: {current_lr}")
+                if writer is not None:
+                    try:
+                        writer.add_scalar("Learning Rate", current_lr, e)
+                    except Exception:
+                        pass
+                if wandb_log is not None:
+                    try:
+                        wandb_log({"lr": current_lr})
+                    except Exception:
+                        pass
+
+            if scheduler is not None:
+                if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    scheduler.step(test_loss)
+                else:
+                    scheduler.step()
+
             try:
                 torch.save(model.state_dict(), str(logdir / "last_model.pt"))
             except Exception:
@@ -365,6 +391,28 @@ def train(config):
                 avg_ssim = None
 
             updated = model_checkpoint.update(test_loss)
+
+            # === LR logging + scheduler step ===
+            current_lr = optimizer.param_groups[0].get("lr", None)
+            if current_lr is not None:
+                logging.info(f"Current Learning Rate: {current_lr}")
+                if writer is not None:
+                    try:
+                        writer.add_scalar("Learning Rate", current_lr, e)
+                    except Exception:
+                        pass
+                if wandb_log is not None:
+                    try:
+                        wandb_log({"lr": current_lr})
+                    except Exception:
+                        pass
+
+            if scheduler is not None:
+                if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    scheduler.step(test_loss)
+                else:
+                    scheduler.step()
+
             try:
                 torch.save(model.state_dict(), str(logdir / "last_model.pt"))
             except Exception:

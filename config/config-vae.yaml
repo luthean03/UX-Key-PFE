@@ -37,10 +37,19 @@ optim:
   epochs: 100
   beta_kld: 0.001 # Poids de la perte KL (commence bas)
 
+  # === Scheduler (LR) ===
+  scheduler:
+    name: "ReduceLROnPlateau"
+    params:
+      mode: "min"         # On veut minimiser la loss
+      factor: 0.5         # On divise le LR par 2 quand ça stagne
+      patience: 5         # Nb d'époques sans amélioration
+      verbose: True       # Affiche quand le LR change
+      min_lr: 0.00001     # Plancher
+
 # === OPTIMIZATION (Gradient accumulation configurable) ===
 optimization:
   lr: 0.0005
-  epochs: 100
   weight_decay: 0.00001
   # Définit combien d'images on traite avant de mettre à jour les poids.
   # Comme `batch_size` réel est souvent 1, ceci définit votre batch virtuel.

@@ -139,8 +139,3 @@ class VAE(nn.Module):
         recon_small = self.decoder(self.fc_decode(z))
         recon = F.interpolate(recon_small, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
         return recon, mu, logvar
-
-        # Map latent vector back to decoder input size
-        h_dec = self.fc_decode(z)
-        recon_x = self.decoder(h_dec)
-        return recon_x, mu, logvar

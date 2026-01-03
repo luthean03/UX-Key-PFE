@@ -43,11 +43,15 @@ class VariableSizeDataset(Dataset):
         img_path = os.path.join(self.root_dir, self.files[idx])
         clean_image = Image.open(img_path).convert('L')
         
-        # === RANDOM CROP pour éviter le OOM ===
+        # === CROP pour éviter le OOM ===
         w, h = clean_image.size
         if h > self.max_height:
-            # On prend une tranche aléatoire de l'interface
-            top = random.randint(0, h - self.max_height)
+            # Train: crop aléatoire (regularization)
+            # Valid: crop déterministe (stabilité du monitoring / scheduler)
+            if self.augment:
+                top = random.randint(0, h - self.max_height)
+            else:
+                top = (h - self.max_height) // 2
             # crop(left, top, right, bottom)
             clean_image = clean_image.crop((0, top, w, top + self.max_height))
         # ======================================
@@ -99,13 +103,15 @@ def get_dataloaders(data_config, use_cuda):
     files = [f for f in os.listdir(data_dir) if f.endswith('_linear.png')]
     if len(files) == 0:
         files = [f for f in os.listdir(data_dir) if f.lower().endswith('.png')]
+    if len(files) == 0:
+        raise ValueError(f"No PNG files found in data_dir={data_dir}")
 
     # Shuffle and split files into train/valid so we can instantiate datasets
     valid_ratio = float(data_config.get("valid_ratio", 0.2))
     # Reproducible split: allow overriding via `seed` in config
     seed = int(data_config.get('seed', 42))
-    random.seed(seed)
-    random.shuffle(files)
+    rng = random.Random(seed)
+    rng.shuffle(files)
     train_size = int((1.0 - valid_ratio) * len(files))
     train_files = files[:train_size]
     valid_files = files[train_size:]
@@ -141,7 +147,41 @@ def get_dataloaders(data_config, use_cuda):
         random_erasing_prob=0.0,
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=int(data_config.get('batch_size', 1)), shuffle=True, num_workers=0, pin_memory=use_cuda)
-    valid_loader = DataLoader(valid_dataset, batch_size=int(data_config.get('batch_size', 1)), shuffle=False, num_workers=0, pin_memory=use_cuda)
+    def _seed_worker(worker_id: int):
+        # Ensure python `random` is different per worker
+        worker_seed = torch.initial_seed() % 2**32
+        random.seed(worker_seed)
 
-    return train_loader, valid_loader, (1, 0, 0), 0
+    batch_size = int(data_config.get('batch_size', 1))
+    num_workers = int(data_config.get('num_workers', 0))
+    g = torch.Generator()
+    g.manual_seed(seed)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=use_cuda,
+        worker_init_fn=_seed_worker if num_workers > 0 else None,
+        generator=g,
+    )
+    valid_loader = DataLoader(
+        valid_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=use_cuda,
+        worker_init_fn=_seed_worker if num_workers > 0 else None,
+    )
+
+    # Best-effort input shape (C, H, W) for model factory + torchinfo.
+    # Note: variable-size datasets won't have a single fixed shape.
+    try:
+        sample_x, _ = train_dataset[0]
+        input_size = tuple(sample_x.shape)
+    except Exception:
+        input_size = (1, max_h, max_h)
+
+    num_classes = int(data_config.get('num_classes', 0))
+    return train_loader, valid_loader, input_size, num_classes
