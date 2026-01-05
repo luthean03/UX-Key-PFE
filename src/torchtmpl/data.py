@@ -11,7 +11,9 @@ import logging
 Image.MAX_IMAGE_PIXELS = None 
 
 class VariableSizeDataset(Dataset):
-    def __init__(self, root_dir, noise_level=0.0, max_height=2048, augment=False, files_list=None, sp_prob=0.02, perspective_p=0.3, perspective_distortion_scale=0.08, random_erasing_prob=0.5):
+    def __init__(self, root_dir, noise_level=0.0, max_height=2048, augment=False, files_list=None, 
+                 sp_prob=0.02, perspective_p=0.3, perspective_distortion_scale=0.08, random_erasing_prob=0.5,
+                 rotation_degrees=0, brightness_jitter=0.0, contrast_jitter=0.0):
         self.root_dir = root_dir
         # Allow passing an explicit files list (used when splitting train/valid)
         if files_list is not None:
@@ -30,11 +32,33 @@ class VariableSizeDataset(Dataset):
         self.perspective_p = float(perspective_p)
         self.perspective_distortion_scale = float(perspective_distortion_scale)
         self.random_erasing_prob = float(random_erasing_prob)
+        
+        # AMÉLIORATION: Nouvelles augmentations
+        self.rotation_degrees = float(rotation_degrees)
+        self.brightness_jitter = float(brightness_jitter)
+        self.contrast_jitter = float(contrast_jitter)
 
         # Pipeline d'augmentation "Web-Safe" (appliquée sur PIL images)
-        self.augment_transform = T.Compose([
-            T.RandomPerspective(distortion_scale=self.perspective_distortion_scale, p=self.perspective_p),
-        ])
+        augment_transforms = []
+        
+        # Rotation légère (si activée)
+        if self.rotation_degrees > 0:
+            augment_transforms.append(
+                T.RandomRotation(degrees=self.rotation_degrees, fill=1.0)  # fill=1 (blanc)
+            )
+        
+        # Perspective
+        augment_transforms.append(
+            T.RandomPerspective(distortion_scale=self.perspective_distortion_scale, p=self.perspective_p)
+        )
+        
+        # Jitter couleur (brightness + contrast)
+        if self.brightness_jitter > 0 or self.contrast_jitter > 0:
+            augment_transforms.append(
+                T.ColorJitter(brightness=self.brightness_jitter, contrast=self.contrast_jitter)
+            )
+        
+        self.augment_transform = T.Compose(augment_transforms) if augment_transforms else None
 
     def __len__(self):
         return len(self.files)
@@ -57,7 +81,7 @@ class VariableSizeDataset(Dataset):
         # ======================================
         
         # === 2. DATA AUGMENTATION (Seulement pour le train) ===
-        if self.augment:
+        if self.augment and self.augment_transform is not None:
             try:
                 clean_image = self.augment_transform(clean_image)
             except Exception:
@@ -122,6 +146,11 @@ def get_dataloaders(data_config, use_cuda):
     random_erasing_prob = float(data_config.get('random_erasing_prob', data_config.get('random_erasing_p', 0.5)))
     perspective_p = float(data_config.get('perspective_p', data_config.get('perspective_p', 0.3)))
     perspective_distortion_scale = float(data_config.get('perspective_distortion_scale', 0.08))
+    
+    # AMÉLIORATION: Nouvelles augmentations
+    rotation_degrees = float(data_config.get('rotation_degrees', 0))
+    brightness_jitter = float(data_config.get('brightness_jitter', 0.0))
+    contrast_jitter = float(data_config.get('contrast_jitter', 0.0))
 
     # Create dataset instances with augment enabled for train and disabled for validation
     train_dataset = VariableSizeDataset(
@@ -134,6 +163,9 @@ def get_dataloaders(data_config, use_cuda):
         perspective_p=perspective_p,
         perspective_distortion_scale=perspective_distortion_scale,
         random_erasing_prob=random_erasing_prob,
+        rotation_degrees=rotation_degrees,
+        brightness_jitter=brightness_jitter,
+        contrast_jitter=contrast_jitter,
     )
     valid_dataset = VariableSizeDataset(
         root_dir=data_dir,
@@ -145,6 +177,9 @@ def get_dataloaders(data_config, use_cuda):
         perspective_p=perspective_p,
         perspective_distortion_scale=perspective_distortion_scale,
         random_erasing_prob=0.0,
+        rotation_degrees=0,
+        brightness_jitter=0.0,
+        contrast_jitter=0.0,
     )
 
     def _seed_worker(worker_id: int):

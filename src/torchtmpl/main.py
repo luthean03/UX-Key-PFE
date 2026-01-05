@@ -203,6 +203,16 @@ def train(config):
         optim_conf = config.get("optimization", {})
         grad_accumulation_steps = int(optim_conf.get("accumulation_steps", int(config.get("grad_accumulation_steps", 64))))
         logging.info(f"Training with Gradient Accumulation Steps: {grad_accumulation_steps}")
+        
+        # AMÉLIORATION: Mixed Precision Training (AMP)
+        use_amp = bool(optim_conf.get("mixed_precision", False)) and use_cuda
+        if use_amp:
+            from torch.cuda.amp import autocast, GradScaler
+            scaler = GradScaler()
+            logging.info("Mixed Precision Training (AMP) enabled")
+        else:
+            scaler = None
+            logging.info("Mixed Precision Training (AMP) disabled")
 
         optimizer.zero_grad()
         for e in range(config["nepochs"]):
@@ -232,17 +242,52 @@ def train(config):
             model.train()
             train_total = 0.0
             train_samples = 0
+            # AMÉLIORATION: Accumulateurs pour composantes de loss
+            train_pixel_total = 0.0
+            train_kld_total = 0.0
+            train_vgg_total = 0.0
+            
             pbar = tqdm(train_loader, desc=f"Epoch {e}/{config['nepochs']}", dynamic_ncols=True)
             for i, (inputs, targets) in enumerate(pbar):
                 inputs, targets = inputs.to(device), targets.to(device)
-                recon, mu, logvar = model(inputs)
-                total_loss, _, _ = criterion(recon, targets, mu, logvar)
+                
+                # AMÉLIORATION: Forward pass avec AMP si activé
+                if use_amp:
+                    with autocast():
+                        recon, mu, logvar = model(inputs)
+                        loss_result = criterion(recon, targets, mu, logvar)
+                else:
+                    recon, mu, logvar = model(inputs)
+                    loss_result = criterion(recon, targets, mu, logvar)
+                
+                # Récupère toutes les composantes
+                if len(loss_result) == 4:
+                    total_loss, pixel_loss, kld_loss, vgg_loss = loss_result
+                    train_pixel_total += pixel_loss.item()
+                    train_kld_total += kld_loss.item()
+                    train_vgg_total += vgg_loss.item()
+                else:
+                    total_loss, pixel_loss, kld_loss = loss_result
+                    train_pixel_total += pixel_loss.item()
+                    train_kld_total += kld_loss.item()
 
-                (total_loss / grad_accumulation_steps).backward()
+                # AMÉLIORATION: Backward pass avec AMP si activé
+                if use_amp:
+                    scaler.scale(total_loss / grad_accumulation_steps).backward()
+                else:
+                    (total_loss / grad_accumulation_steps).backward()
+                
                 if (i + 1) % grad_accumulation_steps == 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    optimizer.step()
-                    optimizer.zero_grad()
+                    if use_amp:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        scaler.step(optimizer)
+                        scaler.update()
+                        optimizer.zero_grad()
+                    else:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        optimizer.step()
+                        optimizer.zero_grad()
                     try:
                         pbar.set_postfix(loss=f"{total_loss.item():.4f}", beta=f"{current_beta:.4f}")
                     except Exception:
@@ -253,9 +298,16 @@ def train(config):
                 train_samples += bs
 
             if (i + 1) % grad_accumulation_steps != 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-                optimizer.zero_grad()
+                if use_amp:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
 
             train_loss = train_total / max(1, train_samples)
 
@@ -263,6 +315,11 @@ def train(config):
             model.eval()
             val_total = 0.0
             val_samples = 0
+            # AMÉLIORATION: Accumulateurs validation
+            val_pixel_total = 0.0
+            val_kld_total = 0.0
+            val_vgg_total = 0.0
+            
             ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
             total_ssim = 0.0
             ssim_count = 0
@@ -270,7 +327,19 @@ def train(config):
                 for inputs, targets in valid_loader:
                     inputs, targets = inputs.to(device), targets.to(device)
                     recon, mu, logvar = model(inputs)
-                    total_loss, _, _ = criterion(recon, targets, mu, logvar)
+                    
+                    # AMÉLIORATION: Récupère composantes validation
+                    loss_result = criterion(recon, targets, mu, logvar)
+                    if len(loss_result) == 4:
+                        total_loss, pixel_loss, kld_loss, vgg_loss = loss_result
+                        val_pixel_total += pixel_loss.item()
+                        val_kld_total += kld_loss.item()
+                        val_vgg_total += vgg_loss.item()
+                    else:
+                        total_loss, pixel_loss, kld_loss = loss_result
+                        val_pixel_total += pixel_loss.item()
+                        val_kld_total += kld_loss.item()
+                    
                     val_total += total_loss.item()
                     val_samples += inputs.shape[0]
                     try:
@@ -335,7 +404,34 @@ def train(config):
             except Exception:
                 logging.debug("Could not save reconstruction image for epoch %d", e)
 
+            # AMÉLIORATION: Log des composantes détaillées
+            train_pixel_avg = train_pixel_total / max(1, train_samples)
+            train_kld_avg = train_kld_total / max(1, train_samples)
+            val_pixel_avg = val_pixel_total / max(1, val_samples)
+            val_kld_avg = val_kld_total / max(1, val_samples)
+            
             metrics = {"train_ELBO": train_loss, "test_ELBO": test_loss, "test_SSIM": avg_ssim}
+            
+            # Ajout composantes dans metrics
+            if train_vgg_total > 0:
+                train_vgg_avg = train_vgg_total / max(1, train_samples)
+                val_vgg_avg = val_vgg_total / max(1, val_samples)
+                metrics.update({
+                    "train_pixel_loss": train_pixel_avg,
+                    "train_vgg_loss": train_vgg_avg,
+                    "train_kld_loss": train_kld_avg,
+                    "test_pixel_loss": val_pixel_avg,
+                    "test_vgg_loss": val_vgg_avg,
+                    "test_kld_loss": val_kld_avg,
+                })
+            else:
+                metrics.update({
+                    "train_pixel_loss": train_pixel_avg,
+                    "train_kld_loss": train_kld_avg,
+                    "test_pixel_loss": val_pixel_avg,
+                    "test_kld_loss": val_kld_avg,
+                })
+            
             if wandb_log is not None:
                 wandb_log(metrics)
             if writer is not None:
@@ -343,6 +439,18 @@ def train(config):
                 writer.add_scalar("test_ELBO", test_loss, e)
                 try:
                     writer.add_scalar("test_SSIM", avg_ssim, e)
+                except Exception:
+                    pass
+                
+                # AMÉLIORATION: Log composantes séparées
+                try:
+                    writer.add_scalar("train/pixel_loss", train_pixel_avg, e)
+                    writer.add_scalar("train/kld_loss", train_kld_avg, e)
+                    writer.add_scalar("test/pixel_loss", val_pixel_avg, e)
+                    writer.add_scalar("test/kld_loss", val_kld_avg, e)
+                    if train_vgg_total > 0:
+                        writer.add_scalar("train/vgg_loss", train_vgg_avg, e)
+                        writer.add_scalar("test/vgg_loss", val_vgg_avg, e)
                 except Exception:
                     pass
 

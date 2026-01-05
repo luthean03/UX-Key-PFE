@@ -108,7 +108,9 @@ class VGGPerceptualLoss(nn.Module):
         kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
 
         total = pixel_loss + vgg_term + (self.beta * kld_loss)
-        return total, pixel_loss, kld_loss
+        
+        # AMÉLIORATION: Retourne toutes les composantes pour monitoring détaillé
+        return total, pixel_loss, kld_loss, vgg_term
 
 
 def get_vae_loss(loss_config: dict):

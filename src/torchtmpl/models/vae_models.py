@@ -88,6 +88,9 @@ class VAE(nn.Module):
         super(VAE, self).__init__()
         self.latent_dim = config.get("latent_dim", 128)
         self.spp_levels = [1, 2, 4]
+        
+        # AMÉLIORATION: Dropout configurable pour régularisation
+        self.dropout_p = config.get("dropout_p", 0.0)
 
         self.encoder = nn.Sequential(
             nn.Conv2d(1, 64, 7, 2, 3, bias=False),
@@ -111,10 +114,21 @@ class VAE(nn.Module):
         self.dec_channels = 256
         self.fc_decode = nn.Linear(self.latent_dim, self.dec_channels * self.dec_h * self.dec_w)
 
-        self.decoder = nn.Sequential(
+        # AMÉLIORATION: Decoder avec Dropout2d pour combattre overfitting
+        decoder_layers = [
             nn.Unflatten(1, (self.dec_channels, self.dec_h, self.dec_w)),
+        ]
+        if self.dropout_p > 0:
+            decoder_layers.append(nn.Dropout2d(self.dropout_p))
+        
+        decoder_layers.extend([
             nn.Upsample(scale_factor=2),
             ResidualBlock(256, 128),
+        ])
+        if self.dropout_p > 0:
+            decoder_layers.append(nn.Dropout2d(self.dropout_p))
+        
+        decoder_layers.extend([
             nn.Upsample(scale_factor=2),
             ResidualBlock(128, 64),
             nn.Upsample(scale_factor=2),
@@ -122,7 +136,9 @@ class VAE(nn.Module):
             nn.Upsample(scale_factor=2),
             nn.Conv2d(32, 1, 3, 1, 1),
             nn.Sigmoid(),
-        )
+        ])
+        
+        self.decoder = nn.Sequential(*decoder_layers)
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)

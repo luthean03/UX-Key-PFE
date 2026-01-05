@@ -1,65 +1,91 @@
-data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset" # Le dossier généré par ton script précédent
-  batch_size: 1 # Batch size 1 pour tailles variables et SPP
-  num_workers: 8
-  valid_ratio: 0.2 # Fraction pour validation (train/valid split)
-  # === NOUVEAU : Réglage du bruit pour le Denoising ===
-  noise_level: 0.15    # Quantité de bruit gaussien (0.0 à 1.0)
-  max_height: 2048
-  # === AUGMENTATIONS (Web-safe) ===
-  augment: true                   # Activer/désactiver les augmentations pour le train
-  sp_prob: 0.02                   # Probabilité (par pixel) de salt-and-pepper
-  random_erasing_prob: 0.2       # Probabilité d'appliquer RandomErasing sur l'input
-  perspective_p: 0.3              # Probabilité d'appliquer RandomPerspective
-  perspective_distortion_scale: 0.08
+# ==================== CONFIG VAE AMÉLIORÉ ====================
+# Date: 5 janvier 2026
+# Améliorations: Anti-overfitting, régularisation accrue, augmentations renforcées
 
+data:
+  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset"
+  batch_size: 1                  # Requis pour tailles variables
+  num_workers: 8                 # Parallélisation I/O
+  valid_ratio: 0.2               # 80/20 train/valid split
+  seed: 42                       # Reproductibilité
+  
+  # Gestion mémoire
+  max_height: 2048               # Limite hauteur (crop si dépasse)
+  
+  # === DENOISING (Augmenté pour robustesse) ===
+  noise_level: 0.20              # était: 0.15 → +33% bruit gaussien
+  
+  # === AUGMENTATIONS (Renforcées contre overfitting) ===
+  augment: true
+  sp_prob: 0.04                  # était: 0.02 → x2 salt-and-pepper
+  random_erasing_prob: 0.35      # était: 0.2 → +75% masking
+  perspective_p: 0.3             # Perspective transform (inchangé)
+  perspective_distortion_scale: 0.12  # était: 0.08 → +50% distortion
+  
+  # === NOUVELLES AUGMENTATIONS ===
+  rotation_degrees: 5            # Rotation légère ±5°
+  brightness_jitter: 0.1         # Variation luminosité ±10%
+  contrast_jitter: 0.1           # Variation contraste ±10%
+
+# ==================== MODEL ====================
 model:
   name: "vae"
-  class: "VAE"  # <--- INDISPENSABLE : Doit correspondre au nom de la classe dans vae_models.py
-  latent_dim: 128
-  input_channels: 1
+  class: "VAE"                   # Doit correspondre à vae_models.py
+  latent_dim: 128                # Dimension espace latent
+  input_channels: 1              # Grayscale
+  dropout_p: 0.15                # NOUVEAU: Dropout dans decoder
 
-# === NOUVELLE SECTION LOSS ===
+# ==================== LOSS (Régularisation accrue) ====================
 loss:
-  name: "perceptual"         # Options: "l1", "mse", "perceptual"
-  perceptual_weight: 0.01    # Poids de la composante VGG (0.02-0.1 typiquement)
-  beta_kld: 0.001    # Poids de la régularisation KL
-  # KL Annealing : Nombre d'époques pour passer de Beta=0 à Beta_target
-  # Mettez 0 pour désactiver l'annealing.
-  # Mettez 20 pour une chauffe progressive (recommandé pour la stabilité).
-  warmup_epochs: 20
+  name: "perceptual"             # VGG + Pixel + KLD
+  perceptual_weight: 0.08        # était: 0.01 → x8 (force features VGG)
+  beta_kld: 0.005                # était: 0.001 → x5 (régularisation VAE)
+  warmup_epochs: 15              # était: 20 → converge plus vite
 
+# ==================== OPTIMIZER (Démarrage plus conservateur) ====================
 optim:
   algo: "Adam"
   params:
-    lr: 0.0005 # Les VAE aiment les learning rates bas
-    weight_decay: 0.00001
+    lr: 0.0003                   # était: 0.0005 → -40% (démarrage plus doux)
+    weight_decay: 0.0001         # était: 0.00001 → x10 (régularisation L2)
+  
   epochs: 100
-  beta_kld: 0.001 # Poids de la perte KL (commence bas)
-
-  # === Scheduler (LR) ===
+  beta_kld: 0.005                # Répété (legacy, utilise loss.beta_kld)
+  
+  # === SCHEDULER (Plus patient) ===
   scheduler:
     name: "ReduceLROnPlateau"
     params:
-      mode: "min"         # On veut minimiser la loss
-      factor: 0.5         # On divise le LR par 2 quand ça stagne
-      patience: 5         # Nb d'époques sans amélioration
-      verbose: True       # Affiche quand le LR change
-      min_lr: 0.00001     # Plancher
+      mode: "min"                # Minimise loss
+      factor: 0.6                # était: 0.5 → réduction plus douce
+      patience: 12               # était: 5 → x2.4 (plus patient)
+      verbose: true
+      min_lr: 3e-05              # était: 1e-05 → plancher plus haut
 
-# === OPTIMIZATION (Gradient accumulation configurable) ===
+# ==================== OPTIMIZATION ====================
 optimization:
-  lr: 0.0005
-  weight_decay: 0.00001
-  # Définit combien d'images on traite avant de mettre à jour les poids.
-  # Comme `batch_size` réel est souvent 1, ceci définit votre batch virtuel.
-  accumulation_steps: 128
+  lr: 0.0003                     # Répété (legacy)
+  weight_decay: 0.0001
+  accumulation_steps: 64         # était: 128 → /2 (plus de variance dans gradients)
+  mixed_precision: true          # NOUVEAU: AMP pour vitesse + mémoire
 
-# Logging / monitoring (minimal). The trainer expects a `logging` section.
+# ==================== LOGGING ====================
 logging:
   logdir: "./logs"
-  # Enable TensorBoard image + scalar logging
-  tensorboard: True
+  tensorboard: true              # Active TensorBoard
+  log_loss_components: true      # NOUVEAU: Log pixel/vgg/kld séparément
+  save_reconstructions_every: 5  # NOUVEAU: Sauvegarde images tous les 5 epochs
+  # wandb:                       # (Optionnel)
+  #   project: "ux-vae-improved"
+  #   entity: "your-team"
 
-# Nombre d'epochs pour la boucle principale (compatibilité avec main.train)
-nepochs: 100
+# ==================== TRAINING ====================
+nepochs: 100                     # Nombre total d'epochs
+
+# ==================== EARLY STOPPING (NOUVEAU) ====================
+early_stopping:
+  enabled: true                  # Active early stopping
+  monitor: "test_SSIM"           # Métrique surveillée (ou "test_ELBO")
+  mode: "max"                    # max pour SSIM, min pour ELBO
+  patience: 20                   # Arrête si pas d'amélioration 20 epochs
+  min_delta: 0.0001              # Amélioration minimale considérée

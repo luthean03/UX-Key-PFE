@@ -32,8 +32,8 @@ echo "Copying the source directory"
 date
 mkdir -p $TMPDIR/code
 
-# === MODIF 1 : Exclusion du dataset local ===
-rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude archetypes_png --exclude samir_lom --exclude vae_dataset . $TMPDIR/code
+# Copie du code + dataset sur le noeud local pour I/O rapide
+rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude archetypes_png --exclude samir_lom . $TMPDIR/code
 
 echo "Checking out the correct version of the code commit_id {commit_id}"
 cd $TMPDIR/code
@@ -83,15 +83,25 @@ if logdir:
         logging_cfg['logdir'] = str(base / logdir_path)
         cfg['logging'] = logging_cfg
 
-# Patch data dir (Pour que le code trouve le dataset sur le cluster)
+# Patch data dir (Utilise dataset local sur noeud si disponible)
 data_cfg = cfg.get('data') or dict()
 data_dir = data_cfg.get('data_dir')
 if data_dir:
-    # Si le chemin est relatif (ex: ./vae_dataset), on le rend absolu par rapport au dossier de lancement
     dd_path = pathlib.Path(data_dir).expanduser()
-    if not dd_path.is_absolute():
+    # Priorité 1: Dataset local sur le noeud ($TMPDIR/code/vae_dataset)
+    local_dataset = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'vae_dataset'
+    if local_dataset.exists():
+        data_cfg['data_dir'] = str(local_dataset)
+        print(f"✅ Using local dataset on node: {{local_dataset}}")
+    # Priorité 2: Chemin absolu (shared filesystem - plus lent)
+    elif dd_path.is_absolute():
+        data_cfg['data_dir'] = str(dd_path)
+        print(f"⚠️  Using shared filesystem (slower): {{dd_path}}")
+    # Priorité 3: Chemin relatif depuis le dossier de lancement
+    else:
         data_cfg['data_dir'] = str(base / dd_path)
-        cfg['data'] = data_cfg
+        print(f"⚠️  Using shared filesystem (slower): {{base / dd_path}}")
+    cfg['data'] = data_cfg
 
 # Patch test checkpoint
 test_cfg = cfg.get('test') or dict()
