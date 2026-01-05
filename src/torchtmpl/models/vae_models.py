@@ -91,15 +91,27 @@ class VAE(nn.Module):
         
         # AMÉLIORATION: Dropout configurable pour régularisation
         self.dropout_p = config.get("dropout_p", 0.0)
+        
+        # AMÉLIORATION: Skip Connections U-Net style
+        self.use_skip_connections = config.get("use_skip_connections", False)
 
-        self.encoder = nn.Sequential(
+        # Encoder avec stockage des features intermédiaires
+        self.enc_conv1 = nn.Sequential(
             nn.Conv2d(1, 64, 7, 2, 3, bias=False),
             nn.GroupNorm(32, 64),
             nn.ReLU(True),
-            nn.MaxPool2d(3, 2, 1),
-            ResidualBlock(64, 128, stride=2),
-            ResidualBlock(128, 256, stride=2),
-            ResidualBlock(256, 512, stride=2),
+            nn.MaxPool2d(3, 2, 1)
+        )
+        self.enc_block1 = ResidualBlock(64, 128, stride=2)   # → features 128 canaux
+        self.enc_block2 = ResidualBlock(128, 256, stride=2)  # → features 256 canaux
+        self.enc_block3 = ResidualBlock(256, 512, stride=2)  # → features 512 canaux
+        
+        # Ancien encoder (pour compatibilité)
+        self.encoder = nn.Sequential(
+            self.enc_conv1,
+            self.enc_block1,
+            self.enc_block2,
+            self.enc_block3,
         )
 
         self.spp = SPPLayer(self.spp_levels)
@@ -114,31 +126,38 @@ class VAE(nn.Module):
         self.dec_channels = 256
         self.fc_decode = nn.Linear(self.latent_dim, self.dec_channels * self.dec_h * self.dec_w)
 
-        # AMÉLIORATION: Decoder avec Dropout2d pour combattre overfitting
-        decoder_layers = [
-            nn.Unflatten(1, (self.dec_channels, self.dec_h, self.dec_w)),
-        ]
-        if self.dropout_p > 0:
-            decoder_layers.append(nn.Dropout2d(self.dropout_p))
+        # AMÉLIORATION: Decoder avec Skip Connections U-Net et Dropout2d
+        self.dec_unflatten = nn.Unflatten(1, (self.dec_channels, self.dec_h, self.dec_w))
         
-        decoder_layers.extend([
-            nn.Upsample(scale_factor=2),
-            ResidualBlock(256, 128),
-        ])
         if self.dropout_p > 0:
-            decoder_layers.append(nn.Dropout2d(self.dropout_p))
+            self.dec_dropout1 = nn.Dropout2d(self.dropout_p)
         
-        decoder_layers.extend([
-            nn.Upsample(scale_factor=2),
-            ResidualBlock(128, 64),
-            nn.Upsample(scale_factor=2),
-            ResidualBlock(64, 32),
-            nn.Upsample(scale_factor=2),
+        self.dec_up1 = nn.Upsample(scale_factor=2)
+        
+        # Ajustement des canaux pour skip connections
+        if self.use_skip_connections:
+            self.dec_block1 = ResidualBlock(256 + 256, 128)  # Concat skip de enc_block2
+        else:
+            self.dec_block1 = ResidualBlock(256, 128)
+        
+        if self.dropout_p > 0:
+            self.dec_dropout2 = nn.Dropout2d(self.dropout_p)
+        
+        self.dec_up2 = nn.Upsample(scale_factor=2)
+        
+        if self.use_skip_connections:
+            self.dec_block2 = ResidualBlock(128 + 128, 64)  # Concat skip de enc_block1
+        else:
+            self.dec_block2 = ResidualBlock(128, 64)
+        
+        self.dec_up3 = nn.Upsample(scale_factor=2)
+        self.dec_block3 = ResidualBlock(64, 32)
+        
+        self.dec_up4 = nn.Upsample(scale_factor=2)
+        self.dec_final = nn.Sequential(
             nn.Conv2d(32, 1, 3, 1, 1),
             nn.Sigmoid(),
-        ])
-        
-        self.decoder = nn.Sequential(*decoder_layers)
+        )
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -147,11 +166,52 @@ class VAE(nn.Module):
 
     def forward(self, x):
         orig_h, orig_w = x.shape[2], x.shape[3]
-        features = self.encoder(x)
+        
+        # Encoder avec sauvegarde des features pour skip connections
+        if self.use_skip_connections:
+            e1 = self.enc_conv1(x)           # features à résolution élevée
+            e2 = self.enc_block1(e1)         # 128 canaux
+            e3 = self.enc_block2(e2)         # 256 canaux
+            features = self.enc_block3(e3)   # 512 canaux (bottleneck)
+        else:
+            features = self.encoder(x)
+        
         pooled = self.spp(features)
         mu, logvar = self.fc_mu(pooled), self.fc_logvar(pooled)
         z = self.reparameterize(mu, logvar)
 
-        recon_small = self.decoder(self.fc_decode(z))
+        # Decoder avec skip connections U-Net style
+        d = self.fc_decode(z)
+        d = self.dec_unflatten(d)
+        
+        if self.dropout_p > 0:
+            d = self.dec_dropout1(d)
+        
+        d = self.dec_up1(d)  # Upsample
+        
+        # Skip connection depuis enc_block2 (256 canaux)
+        if self.use_skip_connections:
+            # Resize skip feature map to match decoder size
+            e3_resized = F.interpolate(e3, size=(d.shape[2], d.shape[3]), mode='bilinear', align_corners=False)
+            d = torch.cat([d, e3_resized], dim=1)  # Concatenation
+        
+        d = self.dec_block1(d)
+        
+        if self.dropout_p > 0:
+            d = self.dec_dropout2(d)
+        
+        d = self.dec_up2(d)  # Upsample
+        
+        # Skip connection depuis enc_block1 (128 canaux)
+        if self.use_skip_connections:
+            e2_resized = F.interpolate(e2, size=(d.shape[2], d.shape[3]), mode='bilinear', align_corners=False)
+            d = torch.cat([d, e2_resized], dim=1)
+        
+        d = self.dec_block2(d)
+        d = self.dec_up3(d)
+        d = self.dec_block3(d)
+        d = self.dec_up4(d)
+        recon_small = self.dec_final(d)
+        
         recon = F.interpolate(recon_small, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
         return recon, mu, logvar

@@ -44,12 +44,23 @@ def get_scheduler(optimizer, cfg: dict):
     sched_config = cfg.get("scheduler", {}) or {}
     name = str(sched_config.get("name", "ReduceLROnPlateau"))
     params = dict(sched_config.get("params", {}) or {})
+    
+    # Convert numeric strings to float (fix YAML parsing issues with scientific notation)
+    for key in ['eta_min', 'min_lr', 'lr', 'T_0', 'T_mult']:
+        if key in params and isinstance(params[key], str):
+            try:
+                params[key] = float(params[key])
+            except ValueError:
+                pass
+    
     logging.info(f"Using Scheduler: {name} with params {params}")
 
     if name == "ReduceLROnPlateau":
         return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **params)
     if name == "CosineAnnealingLR":
         return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **params)
+    if name == "CosineAnnealingWarmRestarts":
+        return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, **params)
 
     logging.warning(f"Unknown scheduler: {name} (scheduler disabled)")
     return None
