@@ -36,16 +36,18 @@ model:
   dropout_p: 0.15                # Dropout dans decoder
   use_skip_connections: true     # NOUVEAU: Skip connections U-Net (préserve détails)
 
-# ==================== LOSS (Régularisation accrue) ====================
+# ==================== LOSS (Optimisé pour STRUCTURE de l'espace latent) ====================
 loss:
   name: "perceptual"             # VGG + Pixel + KLD
-  perceptual_weight: 0.08        # était: 0.01 → x8 (force features VGG)
-  beta_kld: 0.005                # était: 0.001 → x5 (régularisation VAE)
-  warmup_epochs: 15              # était: 20 → converge plus vite
+  perceptual_weight: 0.08        # Valeur finale (epoch 30+)
+  min_perceptual_weight: 0.01    # Valeur initiale (epoch 0)
+  perceptual_warmup_epochs: 30   # Warmup perceptual 0.01 → 0.08 sur 30 epochs
+  beta_kld: 1.0                  # β-VAE: CRITIQUE pour clusters structurés + interpolations cohérentes
+  warmup_epochs: 20              # KLD warmup 0 → 1.0 (évite posterior collapse)
 
 # ==================== OPTIMIZER (Démarrage plus conservateur) ====================
 optim:
-  algo: "Adam"
+  algo: "AdamW"
   params:
     lr: 0.0003                   # était: 0.0005 → -40% (démarrage plus doux)
     weight_decay: 0.0001         # était: 0.00001 → x10 (régularisation L2)

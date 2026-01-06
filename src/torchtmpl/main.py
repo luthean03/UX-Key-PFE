@@ -271,6 +271,12 @@ def train(config):
 
         target_beta = float(loss_config.get("beta_kld", 0.001))
         warmup_epochs = int(loss_config.get("warmup_epochs", 20))
+        
+        # AMÉLIORATION: Perceptual Weight Warmup (Option 2)
+        target_perceptual_weight = float(loss_config.get("perceptual_weight", 0.08))
+        perceptual_warmup_epochs = int(loss_config.get("perceptual_warmup_epochs", 30))
+        min_perceptual_weight = float(loss_config.get("min_perceptual_weight", 0.01))
+        logging.info(f"Perceptual Weight Warmup: {min_perceptual_weight:.4f} → {target_perceptual_weight:.4f} over {perceptual_warmup_epochs} epochs")
 
         optim_conf = config.get("optimization", {})
         grad_accumulation_steps = int(optim_conf.get("accumulation_steps", int(config.get("grad_accumulation_steps", 64))))
@@ -297,17 +303,28 @@ def train(config):
                 criterion.beta = current_beta
             except Exception:
                 pass
+            
+            # AMÉLIORATION: Perceptual Weight Annealing
+            if perceptual_warmup_epochs > 0 and e < perceptual_warmup_epochs:
+                current_perceptual_weight = min_perceptual_weight + (target_perceptual_weight - min_perceptual_weight) * (e / perceptual_warmup_epochs)
+            else:
+                current_perceptual_weight = target_perceptual_weight
+            try:
+                criterion.perceptual_weight = current_perceptual_weight
+            except Exception:
+                pass
 
             if e % 5 == 0:
-                logging.info(f"Epoch {e}: Current KL Beta = {current_beta:.6f}")
+                logging.info(f"Epoch {e}: Current KL Beta = {current_beta:.6f}, Perceptual Weight = {current_perceptual_weight:.6f}")
                 if writer is not None:
                     try:
                         writer.add_scalar("kl_beta", current_beta, e)
+                        writer.add_scalar("perceptual_weight", current_perceptual_weight, e)
                     except Exception:
                         pass
                 if wandb_log is not None:
                     try:
-                        wandb_log({"kl_beta": current_beta})
+                        wandb_log({"kl_beta": current_beta, "perceptual_weight": current_perceptual_weight})
                     except Exception:
                         pass
 
