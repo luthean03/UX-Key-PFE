@@ -32,8 +32,15 @@ echo "Copying the source directory"
 date
 mkdir -p $TMPDIR/code
 
-# Copie du code + dataset sur le noeud local pour I/O rapide
-rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude archetypes_png --exclude samir_lom . $TMPDIR/code
+# Copie du code sur le noeud local pour I/O rapide (exclure logs/datasets lourds)
+rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom . $TMPDIR/code
+
+# Copie des archetypes pour métriques latentes (si le dossier existe)
+if [[ -d "${{current_dir}}/archetypes_png" ]]; then
+    echo "✅ Copying archetypes to node..."
+    rsync -r "${{current_dir}}/archetypes_png/" "$TMPDIR/code/archetypes_png/"
+    echo "✅ Archetypes copied: $(ls $TMPDIR/code/archetypes_png | wc -l) files"
+fi
 
 echo "Checking out the correct version of the code commit_id {commit_id}"
 cd $TMPDIR/code
@@ -101,6 +108,25 @@ if data_dir:
     else:
         data_cfg['data_dir'] = str(base / dd_path)
         print(f"⚠️  Using shared filesystem (slower): {{base / dd_path}}")
+    cfg['data'] = data_cfg
+
+# Patch archetypes dir (même logique que dataset)
+archetypes_dir = data_cfg.get('archetypes_dir')
+if archetypes_dir:
+    arch_path = pathlib.Path(archetypes_dir).expanduser()
+    # Priorité 1: Archetypes locaux sur le noeud
+    local_archetypes = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'archetypes_png'
+    if local_archetypes.exists():
+        data_cfg['archetypes_dir'] = str(local_archetypes)
+        print(f"✅ Using local archetypes on node: {{local_archetypes}}")
+    # Priorité 2: Chemin absolu (shared filesystem)
+    elif arch_path.is_absolute():
+        data_cfg['archetypes_dir'] = str(arch_path)
+        print(f"⚠️  Using shared filesystem archetypes: {{arch_path}}")
+    # Priorité 3: Chemin relatif
+    else:
+        data_cfg['archetypes_dir'] = str(base / arch_path)
+        print(f"⚠️  Using shared filesystem archetypes: {{base / arch_path}}")
     cfg['data'] = data_cfg
 
 # Patch test checkpoint

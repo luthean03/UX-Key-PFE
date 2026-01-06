@@ -108,6 +108,7 @@ from . import loss as loss_module
 from . import models
 from . import optim
 from . import utils
+from . import latent_metrics
 
 
 def _setup_wandb(config: dict):
@@ -557,6 +558,20 @@ def train(config):
                         writer.add_scalar("test/vgg_loss", val_vgg_avg, e)
                 except Exception:
                     pass
+            
+            # AMÉLIORATION: Métriques d'espace latent (tous les 10 epochs)
+            if e % 10 == 0 or e == config["nepochs"] - 1:
+                try:
+                    archetypes_dir = data_config.get('archetypes_dir')
+                    if archetypes_dir and pathlib.Path(archetypes_dir).exists() and writer is not None:
+                        logging.info(f"Computing latent space metrics (epoch {e}) from {archetypes_dir}...")
+                        latent_metrics.log_latent_space_visualization(
+                            model, archetypes_dir, device, writer, e
+                        )
+                    elif not archetypes_dir:
+                        logging.debug("Skipping latent metrics: archetypes_dir not specified in config")
+                except Exception as ex:
+                    logging.warning(f"Latent metrics failed: {ex}")
 
         # Latent visualization
         if TSNE is not None:
