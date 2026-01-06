@@ -1,46 +1,237 @@
-# Rapport Technique - VAE pour Wireframes UI/UX
+# β-VAE pour Espace Latent Structuré de Wireframes UI/UX
 
-**Date:** 5 janvier 2026  
-**Projet:** UX-Key-PFE - Variational AutoEncoder pour la génération et reconstruction de wireframes web
+**Objectif de recherche :** Apprendre une représentation latente **structurée par clusters sémantiques** permettant des interpolations cohérentes entre archétypes de wireframes web.
+
+**Date:** 6 janvier 2026  
+**Auteur:** Samir Dimachkie  
+**Framework:** PyTorch 2.1.2 + CUDA 11.8
 
 ---
 
 ## Table des Matières
 
-1. [Vue d'ensemble du projet](#1-vue-densemble-du-projet)
-2. [Pipeline de génération des données](#2-pipeline-de-génération-des-données)
-3. [Architecture du dataset et chargement](#3-architecture-du-dataset-et-chargement)
-4. [Augmentations de données](#4-augmentations-de-données)
-5. [Architecture du modèle VAE](#5-architecture-du-modèle-vae)
-6. [Fonctions de perte (Loss)](#6-fonctions-de-perte-loss)
-7. [Optimisation et entraînement](#7-optimisation-et-entraînement)
-8. [Monitoring et métriques](#8-monitoring-et-métriques)
-9. [Déploiement sur cluster SLURM](#9-déploiement-sur-cluster-slurm)
-10. [Configuration complète](#10-configuration-complète)
+### I. PROBLÉMATIQUE ET CHOIX ARCHITECTURAUX
+1. [Problématique scientifique](#1-problématique-scientifique)
+2. [Contraintes techniques et solutions](#2-contraintes-techniques-et-solutions)
+3. [Architecture VAE avec SPP](#3-architecture-vae-avec-spp)
+
+### II. FORMULATION MATHÉMATIQUE
+4. [ELBO et β-VAE](#4-elbo-et-β-vae)
+5. [Loss hybride : Pixel + Perceptual + KLD](#5-loss-hybride--pixel--perceptual--kld)
+6. [Annealing schedules](#6-annealing-schedules)
+
+### III. IMPLÉMENTATION ET OPTIMISATION
+7. [Pipeline de données et augmentations](#7-pipeline-de-données-et-augmentations)
+8. [Stratégie d'optimisation](#8-stratégie-doptimisation)
+9. [Métriques d'évaluation](#9-métriques-dévaluation)
+
+### IV. RÉSULTATS ET DÉPLOIEMENT
+10. [Résultats expérimentaux](#10-résultats-expérimentaux)
+11. [Infrastructure SLURM](#11-infrastructure-slurm)
 
 ---
 
-## 1. Vue d'ensemble du projet
+## I. PROBLÉMATIQUE ET CHOIX ARCHITECTURAUX
 
-### Objectif
-Développer un **Variational AutoEncoder (VAE)** capable de reconstruire et générer des wireframes de pages web à partir de données JSON représentant des layouts UI/UX. Le modèle doit gérer des images de tailles variables (hauteurs jusqu'à 2048px) et apprendre une représentation latente compressée des structures de wireframes.
+## 1. Problématique scientifique
 
-### Défis principaux
-- **Tailles d'images variables** : Les wireframes peuvent avoir des hauteurs très différentes (pages courtes vs longues pages web)
-- **Détails fins** : Lignes minces et structures précises à préserver
-- **Mémoire GPU limitée** : Nécessité d'optimiser pour les vieux GPU (CUDA 11.8, PyTorch 2.1.2)
-- **Batch size = 1** : Utilisation d'accumulation de gradients pour simuler des batchs plus grands
+### 1.1 Objectif de recherche
 
-### Stack technologique
-- **Framework**: PyTorch 2.1.2 + CUDA 11.8
-- **Vision**: torchvision 0.16.2
-- **Métriques**: torchmetrics (SSIM)
-- **Visualisation**: TensorBoard, Wandb (optionnel)
-- **Cluster**: SLURM (partition gpu_prod_long, 48h max)
+**Question centrale :** Comment apprendre un espace latent **dense et structuré** où :
+- Les **archétypes sémantiques** (Accueil, Contact, Tarifs, etc.) forment des **clusters distincts**
+- Les **interpolations linéaires** $z_t = (1-t)z_1 + t z_2$ produisent des wireframes **sémantiquement cohérents**
+- L'espace latent suit une **distribution gaussienne** $p(z) = \mathcal{N}(0, I)$ pour faciliter la génération
+
+**Pourquoi un VAE et pas un simple AutoEncoder ?**
+
+| Critère | AutoEncoder | β-VAE (notre choix) |
+|---------|-------------|---------------------|
+| **Espace latent** | Chaotique, trous | Dense, gaussien structuré |
+| **Interpolations** | Artefacts, discontinuités | Fluides, sémantiquement cohérentes |
+| **Génération** | Impossible (pas de prior) | $z \sim \mathcal{N}(0,I) \rightarrow$ nouveaux wireframes |
+| **Clustering** | Pas de garantie | Séparation naturelle par régularisation KL |
+
+### 1.2 Dataset : 15 archetypes étiquetés
+
+**Données disponibles :**
+- 15 types de pages web (Accueil, Contact, Tarifs, Actualités, etc.)
+- Format : JSON $\rightarrow$ PNG grayscale via algorithme de peinture additive
+- Tailles variables : $1024 \times [500, 2048]$ pixels
+
+**Challenge :** Apprendre avec peu de données (overfitting critique) tout en gérant la variabilité spatiale
 
 ---
 
-## 2. Pipeline de génération des données
+## 2. Contraintes techniques et solutions
+
+### 2.1 Contraintes matérielles
+
+| Contrainte | Impact | Solution implémentée |
+|------------|--------|----------------------|
+| **Vieux GPU (CUDA 11.8)** | Mémoire limitée (~8GB) | PyTorch 2.1.2, Mixed Precision (AMP) |
+| **Tailles variables** | Incompatible batchs standards | Spatial Pyramid Pooling (SPP) |
+| **batch_size = 1** | Variance gradients élevée | Gradient accumulation (×128) |
+| **Lignes fines** | Loss pixel insuffisante | VGG Perceptual Loss |
+
+### 2.2 Architecture globale : VAE-SPP-CBAM
+
+```
+Input (1, H_var, W) 
+    ↓
+Encoder ResNet + CBAM
+    ↓ (downscale ×32)
+Features (512, H/32, W/32)
+    ↓
+SPP (Spatial Pyramid Pooling)
+    ↓
+Latent Space (128D)
+    ↓ μ, log σ²
+Reparameterization: z = μ + σ·ε, ε ~ N(0,1)
+    ↓
+Decoder ResNet
+    ↓ (upscale ×32)
+Output (1, H_var, W)
+```
+
+**Innovations clés :**
+1. **SPP** : Gère hauteurs variables sans padding/resize
+2. **CBAM** : Attention channel+spatial pour features pertinentes
+3. **GroupNorm** : Stable avec batch_size=1 (vs BatchNorm)
+4. **β-VAE** : β=1.0 pour espace latent structuré
+
+---
+
+## 3. Architecture VAE avec SPP
+
+### 3.1 Encoder : ResNet-like avec downsampling agressif
+
+**Motivation :** Réduire rapidement la résolution spatiale (2048px → 64px) pour compression efficace
+
+```python
+Encoder = Sequential(
+    Conv2d(1, 64, k=7, s=2, p=3),   # ÷2
+    GroupNorm(32, 64),
+    ReLU(),
+    MaxPool2d(3, s=2),              # ÷2
+    ResBlock(64→128, s=2),          # ÷2  (Total: ÷8)
+    ResBlock(128→256, s=2),         # ÷2  (Total: ÷16)
+    ResBlock(256→512, s=2)          # ÷2  (Total: ÷32)
+)
+# Input: (1, 2048, 1024) → Output: (512, 64, 32)
+```
+
+**ResBlock avec CBAM :**
+```python
+class ResidualBlock(nn.Module):
+    def forward(self, x):
+        identity = x
+        out = ReLU(GroupNorm(Conv3x3(x)))
+        out = GroupNorm(Conv3x3(out))
+        out = CBAM(out)              # Attention avant skip
+        return ReLU(out + shortcut(identity))
+```
+
+**Pourquoi GroupNorm au lieu de BatchNorm ?**
+
+$$
+\text{BatchNorm: } \hat{x}_i = \frac{x_i - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}}
+$$
+
+- **Problème** : $\mu_B, \sigma_B$ instables si batch_size=1
+- **Solution** : GroupNorm calcule stats **par image** sur groupes de canaux
+
+$$
+\text{GroupNorm: } \hat{x}_{i,g} = \frac{x_{i,g} - \mu_g(x_i)}{\sqrt{\sigma_g^2(x_i) + \epsilon}}
+$$
+
+### 3.2 Spatial Pyramid Pooling (SPP)
+
+**Problème mathématique :** 
+- Features shape: $(B, 512, H_{feat}, W_{feat})$ avec $H_{feat}$ variable
+- FC layer nécessite dimension fixe
+
+**Solution SPP :** Multi-scale adaptive pooling
+
+$$
+\text{SPP}(x) = \text{Concat}\left[ \text{AvgPool}_{1 \times 1}(x), \text{AvgPool}_{2 \times 2}(x), \text{AvgPool}_{4 \times 4}(x) \right]
+$$
+
+**Dimension sortie :**
+$$
+d_{SPP} = C \times \sum_{s \in \{1,2,4\}} s^2 = 512 \times (1 + 4 + 16) = 10,752
+$$
+
+**Invariance spatiale :** Quelle que soit $H_{feat}$, sortie toujours $10,752$D
+
+### 3.3 Latent space et reparameterization
+
+**Projection :**
+$$
+\mu = W_\mu \cdot \text{SPP}(x) + b_\mu \in \mathbb{R}^{128}
+$$
+$$
+\log \sigma^2 = W_\sigma \cdot \text{SPP}(x) + b_\sigma \in \mathbb{R}^{128}
+$$
+
+**Reparameterization trick** (gradient flow) :
+$$
+z = \mu + \sigma \odot \epsilon, \quad \epsilon \sim \mathcal{N}(0, I_{128})
+$$
+
+**Pourquoi log σ² au lieu de σ ?**
+- Stabilité numérique : $\sigma = \exp(0.5 \log \sigma^2)$ toujours positif
+- Évite explosion/vanishing : $\log \sigma^2 \in \mathbb{R}$ (pas de contrainte)
+
+### 3.4 CBAM : Convolutional Block Attention Module
+
+**Channel Attention :** "Quels features sont importants ?"
+
+$$
+\text{CA}(F) = \sigma\left( \text{MLP}\left( \text{AvgPool}(F) \right) + \text{MLP}\left( \text{MaxPool}(F) \right) \right)
+$$
+
+**Spatial Attention :** "Où sont les zones importantes ?"
+
+$$
+\text{SA}(F) = \sigma\left( \text{Conv}_{7×7}\left( [\text{AvgPool}_c(F); \text{MaxPool}_c(F)] \right) \right)
+$$
+
+**Application séquentielle :**
+$$
+F' = F \odot \text{CA}(F)
+$$
+$$
+F'' = F' \odot \text{SA}(F')
+$$
+
+**Impact :** Focus sur lignes/bordures (zones critiques des wireframes)
+
+### 3.5 Decoder : Upsample + ResBlocks
+
+```python
+Decoder = Sequential(
+    Linear(128 → 256×64×4),
+    Unflatten(256, 64, 4),
+    Upsample(×2), ResBlock(256→128),  # (256, 128, 8)
+    Upsample(×2), ResBlock(128→64),   # (128, 256, 16)
+    Upsample(×2), ResBlock(64→32),    # (64, 512, 32)
+    Upsample(×2),                     # (32, 1024, 64)
+    Conv2d(32→1, k=3), Sigmoid()
+)
+# Interpolation finale bilinéaire vers taille originale
+```
+
+**Pourquoi démarrer à 64×4 (aspect ratio 16:1) ?**
+- Pages web verticales : $H \gg W$
+- Réduit distorsion lors de l'upsampling final
+
+---
+
+## II. FORMULATION MATHÉMATIQUE
+
+## 4. ELBO et β-VAE
+
+### 4.1 Evidence Lower Bound (ELBO)
 
 ### Script: `img_vae_new.py`
 

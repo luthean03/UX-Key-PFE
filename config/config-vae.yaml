@@ -3,7 +3,7 @@
 # Améliorations: Anti-overfitting, régularisation accrue, augmentations renforcées
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset"
+  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_1"
   archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png"  # Wireframes étiquetés pour métriques latentes
   batch_size: 1                  # Requis pour tailles variables
   num_workers: 8                 # Parallélisation I/O
@@ -85,6 +85,11 @@ logging:
   tensorboard: true              # Active TensorBoard
   log_loss_components: true      # NOUVEAU: Log pixel/vgg/kld séparément
   save_reconstructions_every: 5  # NOUVEAU: Sauvegarde images tous les 5 epochs
+  latent_visualization:
+    # Frequency (in epochs) to run t-SNE + k-means on the training set
+    frequency: 20
+    # Maximum number of training samples to encode for the visualization
+    max_samples: 500
   # wandb:                       # (Optionnel)
   #   project: "ux-vae-improved"
   #   entity: "your-team"

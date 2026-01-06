@@ -559,14 +559,18 @@ def train(config):
                 except Exception:
                     pass
             
-            # AMÉLIORATION: Métriques d'espace latent (tous les 10 epochs)
-            if e % 10 == 0 or e == config["nepochs"] - 1:
+            # AMÉLIORATION: Métriques d'espace latent (configurable)
+            tsne_cfg = logging_config.get("latent_visualization", {}) if isinstance(logging_config, dict) else {}
+            tsne_every = int(tsne_cfg.get("frequency", 10))
+            tsne_max_samples = int(tsne_cfg.get("max_samples", 1000))
+
+            if tsne_every > 0 and (e % tsne_every == 0 or e == config["nepochs"] - 1):
                 try:
                     archetypes_dir = data_config.get('archetypes_dir')
                     if archetypes_dir and pathlib.Path(archetypes_dir).exists() and writer is not None:
-                        logging.info(f"Computing latent space metrics (epoch {e}) from {archetypes_dir}...")
+                        logging.info(f"Computing latent space metrics (epoch {e}) from {archetypes_dir} (max_samples={tsne_max_samples})...")
                         latent_metrics.log_latent_space_visualization(
-                            model, train_loader, archetypes_dir, device, writer, e
+                            model, train_loader, archetypes_dir, device, writer, e, max_samples=tsne_max_samples
                         )
                     elif not archetypes_dir:
                         logging.debug("Skipping latent metrics: archetypes_dir not specified in config")

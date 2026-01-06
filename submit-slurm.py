@@ -33,7 +33,7 @@ date
 mkdir -p $TMPDIR/code
 
 # Copie du code sur le noeud local pour I/O rapide (exclure logs/datasets lourds)
-rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom . $TMPDIR/code
+rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude vae_dataset . $TMPDIR/code
 
 # Copie des archetypes pour métriques latentes (si le dossier existe)
 if [[ -d "${{current_dir}}/archetypes_png" ]]; then
