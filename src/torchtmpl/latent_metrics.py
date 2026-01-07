@@ -45,12 +45,6 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
     
     logging.info(f"Loading {len(archetype_files)} archetypes from {archetypes_dir}")
     
-    # Transform pipeline (same as training)
-    transform = T.Compose([
-        T.Grayscale(num_output_channels=1),
-        T.ToTensor(),
-    ])
-    
     latents = []
     labels = []
     label_names = []
@@ -66,15 +60,20 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
                 # Load image
                 img = Image.open(img_path).convert('L')
                 
-                # Resize if too tall
+                # === PREPROCESSING IDENTIQUE AU TRAINING ===
+                # CROP si trop grand (comme dans data.py ligne 71-78)
                 w, h = img.size
                 if h > max_height:
-                    new_h = max_height
-                    new_w = int(w * (new_h / h))
-                    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                    # Crop déterministe au centre (comme validation)
+                    top = (h - max_height) // 2
+                    img = img.crop((0, top, w, top + max_height))
+                # ===========================================
                 
-                # Transform and encode
-                img_tensor = transform(img).unsqueeze(0).to(device)
+                # Transform to tensor
+                import torchvision.transforms.functional as TF
+                img_tensor = TF.to_tensor(img).unsqueeze(0).to(device)
+                
+                # Encode
                 _, mu, _ = model(img_tensor)
                 
                 latents.append(mu.cpu().numpy())
