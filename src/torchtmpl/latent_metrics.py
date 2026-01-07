@@ -173,43 +173,74 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-def generate_interpolation_video(model, latent1, latent2, device, num_steps=10):
+def generate_interpolation_video(model, latent1, latent2, device, num_steps=10, include_endpoints=True, target_height=512):
     """Generate interpolation frames between two latents (for TensorBoard video).
     
     Args:
         model: VAE model
-        latent1: (latent_dim,) first latent code
-        latent2: (latent_dim,) second latent code
+        latent1: (latent_dim,) first latent code (archetype 1)
+        latent2: (latent_dim,) second latent code (archetype 2)
         device: torch.device
-        num_steps: Number of interpolation steps
+        num_steps: Number of interpolation steps (excluding endpoints if include_endpoints=True)
+        include_endpoints: If True, add archetype reconstructions at start/end
+        target_height: Resize all frames to this height for consistent visualization
     
     Returns:
-        torch.Tensor: (num_steps, C, H, W) interpolated frames or None if failed
+        torch.Tensor: (num_frames, C, H, W) interpolated frames or None if failed
     """
     model.eval()
-    
-    # Linear interpolation in latent space
-    alphas = np.linspace(0, 1, num_steps)
     reconstructions = []
     
     with torch.no_grad():
+        # 1. Reconstruct archetype 1 (beginning)
+        if include_endpoints:
+            try:
+                z1_torch = torch.from_numpy(latent1).unsqueeze(0).float().to(device)
+                recon1 = model.decode(z1_torch)
+                reconstructions.append(recon1)
+            except Exception as e:
+                logging.warning(f"Endpoint 1 decode failed: {e}")
+                return None
+        
+        # 2. Linear interpolation in latent space
+        alphas = np.linspace(0, 1, num_steps)
         for alpha in alphas:
             z_interp = (1 - alpha) * latent1 + alpha * latent2
             z_interp_torch = torch.from_numpy(z_interp).unsqueeze(0).float().to(device)
             
-            # Use the model's decode method
             try:
                 recon = model.decode(z_interp_torch)
-                reconstructions.append(recon.cpu())
+                reconstructions.append(recon)
             except Exception as e:
-                logging.warning(f"Decoding failed ({e}), skipping interpolation")
+                logging.warning(f"Interpolation decode failed ({e})")
+                return None
+        
+        # 3. Reconstruct archetype 2 (end)
+        if include_endpoints:
+            try:
+                z2_torch = torch.from_numpy(latent2).unsqueeze(0).float().to(device)
+                recon2 = model.decode(z2_torch)
+                reconstructions.append(recon2)
+            except Exception as e:
+                logging.warning(f"Endpoint 2 decode failed: {e}")
                 return None
     
     if len(reconstructions) == 0:
         return None
     
-    # Stack frames: (num_steps, C, H, W)
-    return torch.cat(reconstructions, dim=0)
+    # Stack and resize all frames to consistent size
+    # Format: (num_frames, 1, H, W)
+    frames = torch.cat(reconstructions, dim=0)
+    
+    # Resize to target_height while preserving aspect ratio
+    if target_height is not None:
+        _, _, H, W = frames.shape
+        if H != target_height:
+            new_w = int(W * (target_height / H))
+            frames = F.interpolate(frames, size=(target_height, new_w), 
+                                  mode='bilinear', align_corners=False)
+    
+    return frames.cpu()
 
 
 def compute_latent_density_metrics(latents, n_neighbors=5):
@@ -358,13 +389,14 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             idx1, idx2 = np.random.choice(len(archetype_latents), 2, replace=False)
             logging.info(f"Generating interpolation sequence between {archetype_names[idx1]} and {archetype_names[idx2]}")
             
-            # Générer les frames
+            # Générer les frames (avec endpoints = archetypes reconstruits)
             interp_frames = generate_interpolation_video(
-                model, archetype_latents[idx1], archetype_latents[idx2], device, num_steps=10
+                model, archetype_latents[idx1], archetype_latents[idx2], device, 
+                num_steps=8, include_endpoints=True, target_height=512
             )
             
             if interp_frames is not None:
-                # Créer une grille horizontale : [arch1] → [step1] → ... → [step10] → [arch2]
+                # Créer une grille horizontale : [arch1_recon] → [step1] → ... → [step8] → [arch2_recon]
                 num_frames = interp_frames.shape[0]
                 grid = torchvision.utils.make_grid(
                     interp_frames, 
