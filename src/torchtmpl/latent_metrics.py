@@ -351,12 +351,13 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             else:
                 logging.info(f"  Cluster {cluster_id}: ⚠️  Multiple archetypes: {', '.join(archs)}")
     
-    # 6. Interpolation Video (entre 2 archetypes aléatoires)
+    # 6. Interpolation Image Grid (entre 2 archetypes aléatoires)
     if archetype_latents is not None and len(archetype_latents) >= 2:
         try:
+            import torchvision
             # Choisir 2 archetypes au hasard
             idx1, idx2 = np.random.choice(len(archetype_latents), 2, replace=False)
-            logging.info(f"Generating interpolation video between {archetype_names[idx1]} and {archetype_names[idx2]}")
+            logging.info(f"Generating interpolation sequence between {archetype_names[idx1]} and {archetype_names[idx2]}")
             
             # Générer les frames
             interp_frames = generate_interpolation_video(
@@ -364,18 +365,24 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             )
             
             if interp_frames is not None:
-                # Ajouter la vidéo sur TensorBoard
-                # Format attendu: (N, T, C, H, W) où N=1 (1 vidéo), T=10 (10 frames)
-                video_tensor = interp_frames.unsqueeze(0)  # (1, 10, C, H, W)
-                writer.add_video(
-                    f"latent/interpolation_{archetype_names[idx1]}_to_{archetype_names[idx2]}", 
-                    video_tensor, 
-                    epoch, 
-                    fps=2
+                # Créer une grille horizontale : [arch1] → [step1] → ... → [step10] → [arch2]
+                num_frames = interp_frames.shape[0]
+                grid = torchvision.utils.make_grid(
+                    interp_frames, 
+                    nrow=num_frames,  # Tout sur 1 ligne horizontale
+                    normalize=True, 
+                    scale_each=False,
+                    pad_value=1.0,  # Bordure blanche entre images
+                    padding=2
                 )
-                logging.info(f"✅ Interpolation video saved to TensorBoard")
+                writer.add_image(
+                    f"latent/interpolation_{archetype_names[idx1]}_to_{archetype_names[idx2]}", 
+                    grid, 
+                    epoch
+                )
+                logging.info(f"✅ Interpolation sequence ({num_frames} frames) saved: {archetype_names[idx1]} → {archetype_names[idx2]}")
         except Exception as e:
-            logging.warning(f"Interpolation video failed: {e}")
+            logging.warning(f"Interpolation failed: {e}")
     
     # 7. Latent Density
     density_metrics = compute_latent_density_metrics(train_latents, n_neighbors=5)

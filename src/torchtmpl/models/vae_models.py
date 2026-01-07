@@ -165,7 +165,10 @@ class VAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z):
-        """Decode from latent code without skip connections.
+        """Decode from latent code, compatible with skip connections.
+        
+        When skip connections are enabled, creates zero tensors as dummy skips.
+        This ensures interpolation works correctly.
         
         Args:
             z: (batch, latent_dim) latent codes
@@ -179,15 +182,29 @@ class VAE(nn.Module):
         if self.dropout_p > 0:
             d = self.dec_dropout1(d)
         
-        d = self.dec_up1(d)
-        # NO skip connection - just use decoder channels directly
+        d = self.dec_up1(d)  # (batch, 256, 128, 8)
+        
+        # Si skip connections activées, créer dummy skip de zéros
+        if self.use_skip_connections:
+            # Dummy skip de 256 canaux (de enc_block2)
+            dummy_skip1 = torch.zeros(d.shape[0], 256, d.shape[2], d.shape[3], 
+                                     device=d.device, dtype=d.dtype)
+            d = torch.cat([d, dummy_skip1], dim=1)  # (batch, 512, 128, 8)
+        
         d = self.dec_block1(d)
         
         if self.dropout_p > 0:
             d = self.dec_dropout2(d)
         
-        d = self.dec_up2(d)
-        # NO skip connection
+        d = self.dec_up2(d)  # (batch, 128, 256, 16)
+        
+        # Si skip connections activées, créer dummy skip de zéros
+        if self.use_skip_connections:
+            # Dummy skip de 128 canaux (de enc_block1)
+            dummy_skip2 = torch.zeros(d.shape[0], 128, d.shape[2], d.shape[3],
+                                     device=d.device, dtype=d.dtype)
+            d = torch.cat([d, dummy_skip2], dim=1)  # (batch, 256, 256, 16)
+        
         d = self.dec_block2(d)
         
         d = self.dec_up3(d)
