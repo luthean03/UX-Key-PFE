@@ -3,7 +3,7 @@
 # Améliorations: Anti-overfitting, régularisation accrue, augmentations renforcées
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_1"
+  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset"
   archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png"  # Wireframes étiquetés pour métriques latentes
   batch_size: 1                  # Requis pour tailles variables
   num_workers: 8                 # Parallélisation I/O
