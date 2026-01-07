@@ -177,7 +177,7 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-def generate_interpolation_video(model, latent1, latent2, archetype_img1, archetype_img2, device, num_steps=10, include_endpoints=True, target_height=512):
+def generate_interpolation_video(model, latent1, latent2, archetype_img1, archetype_img2, device, num_steps=10, include_endpoints=True, target_height=512, target_width=512):
     """Generate interpolation frames between two latents (for TensorBoard video).
     
     Args:
@@ -190,6 +190,7 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
         num_steps: Number of interpolation steps (excluding endpoints if include_endpoints=True)
         include_endpoints: If True, add archetype reconstructions at start/end
         target_height: Resize all frames to this height for consistent visualization
+        target_width: Resize all frames to this width for consistent visualization
     
     Returns:
         torch.Tensor: (num_frames, C, H, W) interpolated frames or None if failed
@@ -244,19 +245,16 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
     if len(reconstructions) == 0:
         return None
     
-    # Stack and resize all frames to consistent size
-    # Format: (num_frames, 1, H, W)
-    frames = torch.cat(reconstructions, dim=0)
+    # Resize all frames to consistent size and stack
+    resized_frames = []
+    for recon in reconstructions:
+        resized = F.interpolate(recon, size=(target_height, target_width), mode='bilinear', align_corners=False)
+        resized_frames.append(resized.squeeze(0))  # (C, H, W)
     
-    # Resize to target_height while preserving aspect ratio
-    if target_height is not None:
-        _, _, H, W = frames.shape
-        if H != target_height:
-            new_w = int(W * (target_height / H))
-            frames = F.interpolate(frames, size=(target_height, new_w), 
-                                  mode='bilinear', align_corners=False)
-    
-    return frames.cpu()
+    if len(resized_frames) > 0:
+        return torch.stack(resized_frames, dim=0).cpu()
+    else:
+        return None
 
 
 def compute_latent_density_metrics(latents, n_neighbors=5):
