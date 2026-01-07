@@ -43,11 +43,11 @@ if [[ -d "${{current_dir}}/archetypes_png" ]]; then
 fi
 
 # Copie du dataset d'entraînement sur le nœud (I/O local beaucoup plus rapide)
-#if [[ -d "${{current_dir}}/vae_dataset_1" ]]; then
-#    echo "✅ Copying training dataset to node..."
-#    rsync -r --info=progress2 "${{current_dir}}/vae_dataset_1/" "$TMPDIR/code/vae_dataset/"
-#    echo "✅ Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
-#fi
+if [[ -d "${{current_dir}}/vae_dataset_1" ]]; then
+    echo "✅ Copying training dataset to node..."
+    rsync -r --info=progress2 "${{current_dir}}/vae_dataset_1/" "$TMPDIR/code/vae_dataset/"
+    echo "✅ Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
+fi
 
 echo "Checking out the correct version of the code commit_id {commit_id}"
 cd $TMPDIR/code
