@@ -41,7 +41,7 @@ model:
 loss:
   name: "l1"             # VGG + Pixel + KLD
   beta_kld: 1.0                  # β-VAE: CRITIQUE pour clusters structurés + interpolations cohérentes
-  warmup_epochs: 20              # KLD warmup 0 → 1.0 (évite posterior collapse)
+  warmup_epochs: 0              # KLD warmup 0 → 1.0 (évite posterior collapse)
 
 # ==================== OPTIMIZER (Démarrage plus conservateur) ====================
 optim:
@@ -49,9 +49,6 @@ optim:
   params:
     lr: 0.0003                   # était: 0.0005 → -40% (démarrage plus doux)
     weight_decay: 0.0001         # était: 0.00001 → x10 (régularisation L2)
-  
-  epochs: 100
-  beta_kld: 0.005                # Répété (legacy, utilise loss.beta_kld)
   
   # === SCHEDULER (CosineAnnealingWarmRestarts pour cycles d'apprentissage) ===
   scheduler:

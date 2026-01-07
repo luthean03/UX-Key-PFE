@@ -174,23 +174,18 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-def compute_interpolation_quality(model, latent1, latent2, device, num_steps=10):
-    """Compute smoothness of interpolation between two latents.
+def generate_interpolation_video(model, latent1, latent2, device, num_steps=10):
+    """Generate interpolation frames between two latents (for TensorBoard video).
     
     Args:
-        model: VAE model (with full forward pass including encoder)
+        model: VAE model
         latent1: (latent_dim,) first latent code
         latent2: (latent_dim,) second latent code
         device: torch.device
         num_steps: Number of interpolation steps
     
     Returns:
-        dict: smoothness and variance of interpolation
-    
-    NOTE: We use the full model forward pass (with encoder + decoder) to ensure
-    skip connections and all architecture details are properly handled.
-    Since we're interpolating in latent space, we need a way to decode.
-    We use a dummy input to get proper tensor shapes, then override the latent.
+        torch.Tensor: (num_steps, C, H, W) interpolated frames or None if failed
     """
     model.eval()
     
@@ -206,29 +201,16 @@ def compute_interpolation_quality(model, latent1, latent2, device, num_steps=10)
             # Use the model's decode method
             try:
                 recon = model.decode(z_interp_torch)
+                reconstructions.append(recon.cpu())
             except Exception as e:
-                logging.warning(f"Decoding failed ({e}), skipping interpolation metrics")
-                return {}
-            
-            reconstructions.append(recon.cpu())
+                logging.warning(f"Decoding failed ({e}), skipping interpolation")
+                return None
     
-    # Compute frame-to-frame differences
-    diffs = []
-    for i in range(len(reconstructions) - 1):
-        diff = F.l1_loss(reconstructions[i], reconstructions[i+1], reduction='mean')
-        diffs.append(diff.item())
+    if len(reconstructions) == 0:
+        return None
     
-    if len(diffs) == 0:
-        return {}
-    
-    # Smoothness = low variance in differences (consistent change)
-    smoothness = float(np.mean(diffs))
-    variance = float(np.var(diffs)) if len(diffs) > 1 else 0.0
-    
-    return {
-        'interpolation_smoothness': smoothness,
-        'interpolation_variance': variance
-    }
+    # Stack frames: (num_steps, C, H, W)
+    return torch.cat(reconstructions, dim=0)
 
 
 def compute_latent_density_metrics(latents, n_neighbors=5):
@@ -369,18 +351,31 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             else:
                 logging.info(f"  Cluster {cluster_id}: ⚠️  Multiple archetypes: {', '.join(archs)}")
     
-    # 6. Interpolation Quality (entre 2 samples aléatoires du train set)
-    if len(train_latents) >= 2:
+    # 6. Interpolation Video (entre 2 archetypes aléatoires)
+    if archetype_latents is not None and len(archetype_latents) >= 2:
         try:
-            idx1, idx2 = np.random.choice(len(train_latents), 2, replace=False)
-            interp_metrics = compute_interpolation_quality(
-                model, train_latents[idx1], train_latents[idx2], device, num_steps=10
+            # Choisir 2 archetypes au hasard
+            idx1, idx2 = np.random.choice(len(archetype_latents), 2, replace=False)
+            logging.info(f"Generating interpolation video between {archetype_names[idx1]} and {archetype_names[idx2]}")
+            
+            # Générer les frames
+            interp_frames = generate_interpolation_video(
+                model, archetype_latents[idx1], archetype_latents[idx2], device, num_steps=10
             )
-            for key, value in interp_metrics.items():
-                writer.add_scalar(f"latent/{key}", value, epoch)
-            logging.info(f"Epoch {epoch} Interpolation Metrics: {interp_metrics}")
+            
+            if interp_frames is not None:
+                # Ajouter la vidéo sur TensorBoard
+                # Format attendu: (N, T, C, H, W) où N=1 (1 vidéo), T=10 (10 frames)
+                video_tensor = interp_frames.unsqueeze(0)  # (1, 10, C, H, W)
+                writer.add_video(
+                    f"latent/interpolation_{archetype_names[idx1]}_to_{archetype_names[idx2]}", 
+                    video_tensor, 
+                    epoch, 
+                    fps=2
+                )
+                logging.info(f"✅ Interpolation video saved to TensorBoard")
         except Exception as e:
-            logging.warning(f"Interpolation quality failed: {e}")
+            logging.warning(f"Interpolation video failed: {e}")
     
     # 7. Latent Density
     density_metrics = compute_latent_density_metrics(train_latents, n_neighbors=5)
@@ -398,68 +393,75 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         n_samples = len(train_latents)
         perplexity = min(30.0, max(5.0, n_samples / 3))  # Heuristique: perplexity ≈ n_samples/3
         
-        if n_samples < 50:
-            # Peu de samples, utiliser PCA
-            logging.info(f"Using PCA (n_samples={n_samples} < 50)")
-            pca = PCA(n_components=2, random_state=42)
-            z_embedded = pca.fit_transform(train_latents)
-            viz_method = "PCA"
-        else:
-            logging.info(f"Using t-SNE with perplexity={perplexity:.1f} (n_samples={n_samples})")
+        # === GÉNÉRER PCA ET t-SNE ===
+        logging.info(f"Generating PCA visualization...")
+        pca = PCA(n_components=2, random_state=42)
+        z_pca = pca.fit_transform(train_latents)
+        
+        # Calculer t-SNE seulement si assez de samples
+        if n_samples >= 50:
+            logging.info(f"Generating t-SNE visualization with perplexity={perplexity:.1f} (n_samples={n_samples})")
             tsne = TSNE(n_components=2, random_state=42, perplexity=perplexity, 
                        init="pca", learning_rate="auto")
-            z_embedded = tsne.fit_transform(train_latents)
-            viz_method = "t-SNE"
+            z_tsne = tsne.fit_transform(train_latents)
+            visualizations = [("PCA", z_pca, pca), ("t-SNE", z_tsne, None)]
+        else:
+            logging.info(f"Skipping t-SNE (n_samples={n_samples} < 50)")
+            visualizations = [("PCA", z_pca, pca)]
         
-        fig, ax = plt.subplots(figsize=(14, 10))
-        
-        # Colorier par cluster k-means
+        # Générer une figure pour chaque visualisation
         colors = cm.tab20(np.linspace(0, 1, k))
-        for cluster_id in range(k):
-            mask = train_cluster_labels == cluster_id
-            if np.sum(mask) > 0:
-                # Nom du cluster (archetype correspondant si disponible)
-                if archetype_latents is not None and cluster_id in cluster_to_archetypes:
-                    archs = cluster_to_archetypes[cluster_id]
-                    label = f"C{cluster_id}: {archs[0]}" if len(archs) == 1 else f"C{cluster_id}: {len(archs)} archs"
-                else:
-                    label = f"Cluster {cluster_id}"
-                
-                ax.scatter(z_embedded[mask, 0], z_embedded[mask, 1], 
-                          c=[colors[cluster_id]], label=label, s=30, alpha=0.6, edgecolors='none')
         
-        # Superposer les archetypes (étoiles colorées par cluster)
-        if archetype_latents is not None:
-            if n_samples < 50:
-                arch_embedded = pca.transform(archetype_latents)
-            else:
-                # Réutiliser le même t-SNE embedding (approximatif)
-                # Note: t-SNE ne peut pas transformer de nouveaux points, on utilise KNN
-                from sklearn.neighbors import NearestNeighbors
-                nbrs = NearestNeighbors(n_neighbors=1).fit(train_latents)
-                _, indices = nbrs.kneighbors(archetype_latents)
-                arch_embedded = z_embedded[indices.flatten()]
+        for viz_method, z_embedded, fitted_model in visualizations:
+            fig, ax = plt.subplots(figsize=(14, 10))
             
-            # Colorier chaque archetype selon son cluster k-means
-            for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_assignments)):
-                ax.scatter(arch_embedded[i, 0], arch_embedded[i, 1], 
-                          c=[colors[cluster_id]], marker='*', s=500, 
-                          edgecolors='white', linewidths=2, zorder=10)
+            # Colorier par cluster k-means
+            for cluster_id in range(k):
+                mask = train_cluster_labels == cluster_id
+                if np.sum(mask) > 0:
+                    # Nom du cluster (archetype correspondant si disponible)
+                    if archetype_latents is not None and cluster_id in cluster_to_archetypes:
+                        archs = cluster_to_archetypes[cluster_id]
+                        label = f"C{cluster_id}: {archs[0]}" if len(archs) == 1 else f"C{cluster_id}: {len(archs)} archs"
+                    else:
+                        label = f"Cluster {cluster_id}"
+                    
+                    ax.scatter(z_embedded[mask, 0], z_embedded[mask, 1], 
+                              c=[colors[cluster_id]], label=label, s=30, alpha=0.6, edgecolors='none')
+            
+            # Superposer les archetypes (étoiles colorées par cluster)
+            if archetype_latents is not None:
+                if fitted_model is not None:  # PCA
+                    arch_embedded = fitted_model.transform(archetype_latents)
+                else:  # t-SNE - utiliser KNN
+                    from sklearn.neighbors import NearestNeighbors
+                    nbrs = NearestNeighbors(n_neighbors=1).fit(train_latents)
+                    _, indices = nbrs.kneighbors(archetype_latents)
+                    arch_embedded = z_embedded[indices.flatten()]
                 
-                # Annoter l'archetype
-                ax.annotate(name, (arch_embedded[i, 0], arch_embedded[i, 1]),
-                           fontsize=8, ha='center', va='bottom', 
-                           bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
-        
-        ax.set_title(f"Latent Space {viz_method} - Training Dataset (Epoch {epoch}, n={n_samples}, k={k})", fontsize=14)
-        ax.set_xlabel(f"{viz_method} Component 1")
-        ax.set_ylabel(f"{viz_method} Component 2")
-        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=9, ncol=2)
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        writer.add_figure("latent/tsne_train_kmeans", fig, epoch)
-        plt.close(fig)
+                # Colorier chaque archetype selon son cluster k-means
+                for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_assignments)):
+                    ax.scatter(arch_embedded[i, 0], arch_embedded[i, 1], 
+                              c=[colors[cluster_id]], marker='*', s=500, 
+                              edgecolors='white', linewidths=2, zorder=10)
+                    
+                    # Annoter l'archetype
+                    ax.annotate(name, (arch_embedded[i, 0], arch_embedded[i, 1]),
+                               fontsize=8, ha='center', va='bottom', 
+                               bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
+            
+            ax.set_title(f"Latent Space {viz_method} - Training Dataset (Epoch {epoch}, n={n_samples}, k={k})", fontsize=14)
+            ax.set_xlabel(f"{viz_method} Component 1")
+            ax.set_ylabel(f"{viz_method} Component 2")
+            ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=9, ncol=2)
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            # Sauvegarder dans TensorBoard avec un tag différent pour chaque méthode
+            tag = "latent/pca_train_kmeans" if viz_method == "PCA" else "latent/tsne_train_kmeans"
+            writer.add_figure(tag, fig, epoch)
+            plt.close(fig)
+            logging.info(f"✅ {viz_method} visualization saved to TensorBoard")
         
     except Exception as e:
         logging.warning(f"Visualization failed: {e}")
