@@ -48,6 +48,7 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
     latents = []
     labels = []
     label_names = []
+    images = []  # Stocker aussi les images
     
     model.eval()
     with torch.no_grad():
@@ -78,19 +79,21 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
                 
                 latents.append(mu.cpu().numpy())
                 labels.append(idx)
+                images.append(img_tensor.cpu())  # Sauvegarder l'image
                 
             except Exception as e:
                 logging.warning(f"Failed to load {img_path.name}: {e}")
                 continue
     
     if len(latents) == 0:
-        return None, None, None
+        return None, None, None, None
     
     latents = np.concatenate(latents, axis=0)  # (N, latent_dim)
     labels = np.array(labels)  # (N,)
+    images = torch.cat(images, dim=0) if len(images) > 0 else None  # (N, 1, H, W)
     
     logging.info(f"Loaded {len(latents)} archetypes: {', '.join(label_names)}")
-    return latents, labels, label_names
+    return latents, labels, label_names, images
 
 
 def compute_cluster_metrics(latents, labels):
@@ -173,13 +176,15 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-def generate_interpolation_video(model, latent1, latent2, device, num_steps=10, include_endpoints=True, target_height=512):
+def generate_interpolation_video(model, latent1, latent2, archetype_img1, archetype_img2, device, num_steps=10, include_endpoints=True, target_height=512):
     """Generate interpolation frames between two latents (for TensorBoard video).
     
     Args:
         model: VAE model
         latent1: (latent_dim,) first latent code (archetype 1)
         latent2: (latent_dim,) second latent code (archetype 2)
+        archetype_img1: Tensor (1, C, H, W) original archetype 1 image (optional)
+        archetype_img2: Tensor (1, C, H, W) original archetype 2 image (optional)
         device: torch.device
         num_steps: Number of interpolation steps (excluding endpoints if include_endpoints=True)
         include_endpoints: If True, add archetype reconstructions at start/end
@@ -192,11 +197,16 @@ def generate_interpolation_video(model, latent1, latent2, device, num_steps=10, 
     reconstructions = []
     
     with torch.no_grad():
-        # 1. Reconstruct archetype 1 (beginning)
+        # 1. Reconstruct archetype 1 (beginning) - use forward pass like validation
         if include_endpoints:
             try:
-                z1_torch = torch.from_numpy(latent1).unsqueeze(0).float().to(device)
-                recon1 = model.decode(z1_torch)
+                if archetype_img1 is not None:
+                    # Forward complet (encode + decode) comme pendant validation
+                    recon1, _, _ = model(archetype_img1.to(device))
+                else:
+                    # Fallback: decode depuis latent
+                    z1_torch = torch.from_numpy(latent1).unsqueeze(0).float().to(device)
+                    recon1 = model.decode(z1_torch)
                 reconstructions.append(recon1)
             except Exception as e:
                 logging.warning(f"Endpoint 1 decode failed: {e}")
@@ -215,11 +225,16 @@ def generate_interpolation_video(model, latent1, latent2, device, num_steps=10, 
                 logging.warning(f"Interpolation decode failed ({e})")
                 return None
         
-        # 3. Reconstruct archetype 2 (end)
+        # 3. Reconstruct archetype 2 (end) - use forward pass like validation
         if include_endpoints:
             try:
-                z2_torch = torch.from_numpy(latent2).unsqueeze(0).float().to(device)
-                recon2 = model.decode(z2_torch)
+                if archetype_img2 is not None:
+                    # Forward complet (encode + decode) comme pendant validation
+                    recon2, _, _ = model(archetype_img2.to(device))
+                else:
+                    # Fallback: decode depuis latent
+                    z2_torch = torch.from_numpy(latent2).unsqueeze(0).float().to(device)
+                    recon2 = model.decode(z2_torch)
                 reconstructions.append(recon2)
             except Exception as e:
                 logging.warning(f"Endpoint 2 decode failed: {e}")
@@ -336,7 +351,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
     logging.info(f"Encoded {len(train_latents)} training samples")
     
     # 2. Charger archetypes pour déterminer k
-    archetype_latents, archetype_labels, archetype_names = load_archetypes(archetypes_dir, model, device, max_height)
+    archetype_latents, archetype_labels, archetype_names, archetype_images = load_archetypes(archetypes_dir, model, device, max_height)
     
     if archetype_latents is None:
         logging.warning("No archetypes loaded, using k=15 by default")
@@ -389,9 +404,12 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             idx1, idx2 = np.random.choice(len(archetype_latents), 2, replace=False)
             logging.info(f"Generating interpolation sequence between {archetype_names[idx1]} and {archetype_names[idx2]}")
             
-            # Générer les frames (avec endpoints = archetypes reconstruits)
+            # Générer les frames (avec endpoints = archetypes reconstruits via forward complet)
+            img1 = archetype_images[idx1:idx1+1] if archetype_images is not None else None
+            img2 = archetype_images[idx2:idx2+1] if archetype_images is not None else None
             interp_frames = generate_interpolation_video(
-                model, archetype_latents[idx1], archetype_latents[idx2], device, 
+                model, archetype_latents[idx1], archetype_latents[idx2], 
+                img1, img2, device, 
                 num_steps=8, include_endpoints=True, target_height=512
             )
             
