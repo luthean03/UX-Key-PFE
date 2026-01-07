@@ -357,6 +357,13 @@ def train(config):
                 train_recon_total += recon_loss.item()
                 train_kld_total += kld_loss.item()
                 
+                # Backward pass avec gradient accumulation
+                loss_for_backward = total_loss / grad_accumulation_steps
+                if use_amp:
+                    scaler.scale(loss_for_backward).backward()
+                else:
+                    loss_for_backward.backward()
+                
                 if (i + 1) % grad_accumulation_steps == 0:
                     if use_amp:
                         scaler.unscale_(optimizer)

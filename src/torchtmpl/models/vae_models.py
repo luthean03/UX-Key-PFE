@@ -164,6 +164,39 @@ class VAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
+    def decode(self, z):
+        """Decode from latent code without skip connections.
+        
+        Args:
+            z: (batch, latent_dim) latent codes
+            
+        Returns:
+            recon: (batch, 1, H, W) reconstructed images
+        """
+        d = self.fc_decode(z)
+        d = self.dec_unflatten(d)
+        
+        if self.dropout_p > 0:
+            d = self.dec_dropout1(d)
+        
+        d = self.dec_up1(d)
+        # NO skip connection - just use decoder channels directly
+        d = self.dec_block1(d)
+        
+        if self.dropout_p > 0:
+            d = self.dec_dropout2(d)
+        
+        d = self.dec_up2(d)
+        # NO skip connection
+        d = self.dec_block2(d)
+        
+        d = self.dec_up3(d)
+        d = self.dec_block3(d)
+        d = self.dec_up4(d)
+        recon = self.dec_final(d)
+        
+        return recon
+
     def forward(self, x):
         orig_h, orig_w = x.shape[2], x.shape[3]
         

@@ -203,24 +203,11 @@ def compute_interpolation_quality(model, latent1, latent2, device, num_steps=10)
             z_interp = (1 - alpha) * latent1 + alpha * latent2
             z_interp_torch = torch.from_numpy(z_interp).unsqueeze(0).float().to(device)
             
-            # Decode using fc_decode → dec blocks
-            # This assumes model has these attributes (standard VAE architecture)
+            # Use the model's decode method
             try:
-                decoded = model.fc_decode(z_interp_torch)
-                decoded = model.dec_unflatten(decoded)
-                
-                # Pass through decoder blocks (without skip connections to avoid channel mismatch)
-                decoded = model.dec_up1(decoded)
-                decoded = model.dec_block1(decoded)
-                decoded = model.dec_up2(decoded)
-                decoded = model.dec_block2(decoded)
-                decoded = model.dec_up3(decoded)
-                decoded = model.dec_block3(decoded)
-                decoded = model.dec_up4(decoded)
-                recon = model.dec_final(decoded)
-                
+                recon = model.decode(z_interp_torch)
             except Exception as e:
-                logging.warning(f"Manual decoding failed ({e}), skipping interpolation metrics")
+                logging.warning(f"Decoding failed ({e}), skipping interpolation metrics")
                 return {}
             
             reconstructions.append(recon.cpu())
