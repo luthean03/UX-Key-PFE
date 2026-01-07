@@ -90,7 +90,8 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
     
     latents = np.concatenate(latents, axis=0)  # (N, latent_dim)
     labels = np.array(labels)  # (N,)
-    images = torch.cat(images, dim=0) if len(images) > 0 else None  # (N, 1, H, W)
+    # Ne pas concat les images car elles ont des largeurs différentes
+    # Garder comme liste de tensors (1, 1, H, W)
     
     logging.info(f"Loaded {len(latents)} archetypes: {', '.join(label_names)}")
     return latents, labels, label_names, images
@@ -405,8 +406,8 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             logging.info(f"Generating interpolation sequence between {archetype_names[idx1]} and {archetype_names[idx2]}")
             
             # Générer les frames (avec endpoints = archetypes reconstruits via forward complet)
-            img1 = archetype_images[idx1:idx1+1] if archetype_images is not None else None
-            img2 = archetype_images[idx2:idx2+1] if archetype_images is not None else None
+            img1 = archetype_images[idx1] if archetype_images is not None else None
+            img2 = archetype_images[idx2] if archetype_images is not None else None
             interp_frames = generate_interpolation_video(
                 model, archetype_latents[idx1], archetype_latents[idx2], 
                 img1, img2, device, 
