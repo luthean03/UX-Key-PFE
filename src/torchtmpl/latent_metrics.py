@@ -177,8 +177,11 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-def generate_interpolation_video(model, latent1, latent2, archetype_img1, archetype_img2, device, num_steps=10, include_endpoints=True, target_height=512, target_width=512):
+def generate_interpolation_video(model, latent1, latent2, archetype_img1, archetype_img2, device, num_steps=10, include_endpoints=True, target_height=512):
     """Generate interpolation frames between two latents (for TensorBoard video).
+    
+    Interpolates both in latent space AND geometrically (varying height/width)
+    to handle archetypes with different dimensions.
     
     Args:
         model: VAE model
@@ -190,13 +193,16 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
         num_steps: Number of interpolation steps (excluding endpoints if include_endpoints=True)
         include_endpoints: If True, add archetype reconstructions at start/end
         target_height: Resize all frames to this height for consistent visualization
-        target_width: Resize all frames to this width for consistent visualization
     
     Returns:
         torch.Tensor: (num_frames, C, H, W) interpolated frames or None if failed
     """
     model.eval()
     reconstructions = []
+    
+    # Get original dimensions for geometric interpolation
+    orig_h1, orig_w1 = archetype_img1.shape[2:] if archetype_img1 is not None else (target_height, target_height)
+    orig_h2, orig_w2 = archetype_img2.shape[2:] if archetype_img2 is not None else (target_height, target_height)
     
     with torch.no_grad():
         # 1. Reconstruct archetype 1 (beginning) - use forward pass like validation
@@ -214,7 +220,7 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
                 logging.warning(f"Endpoint 1 decode failed: {e}")
                 return None
         
-        # 2. Linear interpolation in latent space
+        # 2. Linear interpolation in latent space + geometric interpolation in pixel space
         alphas = np.linspace(0, 1, num_steps)
         for alpha in alphas:
             z_interp = (1 - alpha) * latent1 + alpha * latent2
@@ -222,7 +228,15 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
             
             try:
                 recon = model.decode(z_interp_torch)
-                reconstructions.append(recon)
+                
+                # Interpolate geometry: smoothly vary height and width between the two archetypes
+                h_interp = int((1 - alpha) * orig_h1 + alpha * orig_h2)
+                w_interp = int((1 - alpha) * orig_w1 + alpha * orig_w2)
+                
+                # Resize this frame to interpolated dimensions
+                recon_resized = F.interpolate(recon, size=(h_interp, w_interp), 
+                                             mode='bilinear', align_corners=False)
+                reconstructions.append(recon_resized)
             except Exception as e:
                 logging.warning(f"Interpolation decode failed ({e})")
                 return None
@@ -245,16 +259,10 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
     if len(reconstructions) == 0:
         return None
     
-    # Resize all frames to consistent size and stack
-    resized_frames = []
-    for recon in reconstructions:
-        resized = F.interpolate(recon, size=(target_height, target_width), mode='bilinear', align_corners=False)
-        resized_frames.append(resized.squeeze(0))  # (C, H, W)
-    
-    if len(resized_frames) > 0:
-        return torch.stack(resized_frames, dim=0).cpu()
-    else:
-        return None
+    # Stack frames without normalization - return raw VAE outputs
+    # Format: (num_frames, C, H, W)
+    frames = torch.cat(reconstructions, dim=0).cpu()
+    return frames
 
 
 def compute_latent_density_metrics(latents, n_neighbors=5):
@@ -413,22 +421,15 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             )
             
             if interp_frames is not None:
-                # Créer une grille horizontale : [arch1_recon] → [step1] → ... → [step8] → [arch2_recon]
-                num_frames = interp_frames.shape[0]
-                grid = torchvision.utils.make_grid(
-                    interp_frames, 
-                    nrow=num_frames,  # Tout sur 1 ligne horizontale
-                    normalize=True, 
-                    scale_each=False,
-                    pad_value=1.0,  # Bordure blanche entre images
-                    padding=2
-                )
-                writer.add_image(
-                    f"latent/interpolation_{archetype_names[idx1]}_to_{archetype_names[idx2]}", 
-                    grid, 
-                    epoch
-                )
-                logging.info(f"✅ Interpolation sequence ({num_frames} frames) saved: {archetype_names[idx1]} → {archetype_names[idx2]}")
+                # Save each frame separately - navigate between them via TensorBoard
+                frames_normalized = (interp_frames - interp_frames.min()) / (interp_frames.max() - interp_frames.min() + 1e-8)
+                for frame_idx, frame in enumerate(frames_normalized):
+                    writer.add_image(
+                        f"interpolations/{archetype_names[idx1]}_to_{archetype_names[idx2]}", 
+                        frame, 
+                        global_step=epoch * 1000 + frame_idx  # epoch*1000 groups frames by epoch
+                    )
+                logging.info(f"✅ Interpolation ({frames_normalized.shape[0]} frames) saved: {archetype_names[idx1]} → {archetype_names[idx2]}")
         except Exception as e:
             logging.warning(f"Interpolation failed: {e}")
     
