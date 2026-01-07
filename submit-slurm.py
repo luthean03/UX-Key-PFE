@@ -33,7 +33,7 @@ date
 mkdir -p $TMPDIR/code
 
 # Copie du code sur le noeud local pour I/O rapide (exclure logs/datasets lourds)
-rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude vae_dataset . $TMPDIR/code
+rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude 'vae_dataset*' . $TMPDIR/code
 
 # Copie des archetypes pour métriques latentes (si le dossier existe)
 if [[ -d "${{current_dir}}/archetypes_png" ]]; then
@@ -41,6 +41,13 @@ if [[ -d "${{current_dir}}/archetypes_png" ]]; then
     rsync -r "${{current_dir}}/archetypes_png/" "$TMPDIR/code/archetypes_png/"
     echo "✅ Archetypes copied: $(ls $TMPDIR/code/archetypes_png | wc -l) files"
 fi
+
+# Copie du dataset d'entraînement sur le nœud (I/O local beaucoup plus rapide)
+#if [[ -d "${{current_dir}}/vae_dataset_1" ]]; then
+#    echo "✅ Copying training dataset to node..."
+#    rsync -r --info=progress2 "${{current_dir}}/vae_dataset_1/" "$TMPDIR/code/vae_dataset/"
+#    echo "✅ Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
+#fi
 
 echo "Checking out the correct version of the code commit_id {commit_id}"
 cd $TMPDIR/code
