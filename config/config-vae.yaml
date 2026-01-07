@@ -39,10 +39,7 @@ model:
 
 # ==================== LOSS (Optimisé pour STRUCTURE de l'espace latent) ====================
 loss:
-  name: "perceptual"             # VGG + Pixel + KLD
-  perceptual_weight: 0.08        # Valeur finale (epoch 30+)
-  min_perceptual_weight: 0.01    # Valeur initiale (epoch 0)
-  perceptual_warmup_epochs: 30   # Warmup perceptual 0.01 → 0.08 sur 30 epochs
+  name: "l1"             # VGG + Pixel + KLD
   beta_kld: 1.0                  # β-VAE: CRITIQUE pour clusters structurés + interpolations cohérentes
   warmup_epochs: 20              # KLD warmup 0 → 1.0 (évite posterior collapse)
 

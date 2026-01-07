@@ -273,11 +273,10 @@ def train(config):
         target_beta = float(loss_config.get("beta_kld", 0.001))
         warmup_epochs = int(loss_config.get("warmup_epochs", 20))
         
-        # AMÉLIORATION: Perceptual Weight Warmup (Option 2)
-        target_perceptual_weight = float(loss_config.get("perceptual_weight", 0.08))
-        perceptual_warmup_epochs = int(loss_config.get("perceptual_warmup_epochs", 30))
-        min_perceptual_weight = float(loss_config.get("min_perceptual_weight", 0.01))
-        logging.info(f"Perceptual Weight Warmup: {min_perceptual_weight:.4f} → {target_perceptual_weight:.4f} over {perceptual_warmup_epochs} epochs")
+        # Nom de la loss de reconstruction (pour logging)
+        recon_loss_name = loss_config.get("name", "l1").lower()
+        if recon_loss_name not in ["l1", "mse"]:
+            recon_loss_name = "recon"  # Fallback générique
 
         optim_conf = config.get("optimization", {})
         grad_accumulation_steps = int(optim_conf.get("accumulation_steps", int(config.get("grad_accumulation_steps", 64))))
@@ -304,38 +303,26 @@ def train(config):
                 criterion.beta = current_beta
             except Exception:
                 pass
-            
-            # AMÉLIORATION: Perceptual Weight Annealing
-            if perceptual_warmup_epochs > 0 and e < perceptual_warmup_epochs:
-                current_perceptual_weight = min_perceptual_weight + (target_perceptual_weight - min_perceptual_weight) * (e / perceptual_warmup_epochs)
-            else:
-                current_perceptual_weight = target_perceptual_weight
-            try:
-                criterion.perceptual_weight = current_perceptual_weight
-            except Exception:
-                pass
 
             if e % 5 == 0:
-                logging.info(f"Epoch {e}: Current KL Beta = {current_beta:.6f}, Perceptual Weight = {current_perceptual_weight:.6f}")
+                logging.info(f"Epoch {e}: Current KL Beta = {current_beta:.6f}")
                 if writer is not None:
                     try:
                         writer.add_scalar("kl_beta", current_beta, e)
-                        writer.add_scalar("perceptual_weight", current_perceptual_weight, e)
                     except Exception:
                         pass
                 if wandb_log is not None:
                     try:
-                        wandb_log({"kl_beta": current_beta, "perceptual_weight": current_perceptual_weight})
+                        wandb_log({"kl_beta": current_beta})
                     except Exception:
                         pass
 
             model.train()
             train_total = 0.0
             train_samples = 0
-            # AMÉLIORATION: Accumulateurs pour composantes de loss
-            train_pixel_total = 0.0
+            # Accumulateurs pour composantes de loss (recon + KLD)
+            train_recon_total = 0.0
             train_kld_total = 0.0
-            train_vgg_total = 0.0
             
             # Récupère config Mixup/CutMix
             use_mixup = optim_conf.get("use_mixup", False)
@@ -365,22 +352,10 @@ def train(config):
                     recon, mu, logvar = model(inputs)
                     loss_result = criterion(recon, targets, mu, logvar)
                 
-                # Récupère toutes les composantes
-                if len(loss_result) == 4:
-                    total_loss, pixel_loss, kld_loss, vgg_loss = loss_result
-                    train_pixel_total += pixel_loss.item()
-                    train_kld_total += kld_loss.item()
-                    train_vgg_total += vgg_loss.item()
-                else:
-                    total_loss, pixel_loss, kld_loss = loss_result
-                    train_pixel_total += pixel_loss.item()
-                    train_kld_total += kld_loss.item()
-
-                # AMÉLIORATION: Backward pass avec AMP si activé
-                if use_amp:
-                    scaler.scale(total_loss / grad_accumulation_steps).backward()
-                else:
-                    (total_loss / grad_accumulation_steps).backward()
+                # SimpleVAELoss retourne toujours 3 valeurs: (total, recon, kld)
+                total_loss, recon_loss, kld_loss = loss_result
+                train_recon_total += recon_loss.item()
+                train_kld_total += kld_loss.item()
                 
                 if (i + 1) % grad_accumulation_steps == 0:
                     if use_amp:
@@ -420,10 +395,9 @@ def train(config):
             model.eval()
             val_total = 0.0
             val_samples = 0
-            # AMÉLIORATION: Accumulateurs validation
-            val_pixel_total = 0.0
+            # Accumulateurs validation (recon + KLD)
+            val_recon_total = 0.0
             val_kld_total = 0.0
-            val_vgg_total = 0.0
             
             ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
             total_ssim = 0.0
@@ -433,18 +407,10 @@ def train(config):
                     inputs, targets = inputs.to(device), targets.to(device)
                     recon, mu, logvar = model(inputs)
                     
-                    # AMÉLIORATION: Récupère composantes validation
-                    loss_result = criterion(recon, targets, mu, logvar)
-                    if len(loss_result) == 4:
-                        total_loss, pixel_loss, kld_loss, vgg_loss = loss_result
-                        val_pixel_total += pixel_loss.item()
-                        val_kld_total += kld_loss.item()
-                        val_vgg_total += vgg_loss.item()
-                    else:
-                        total_loss, pixel_loss, kld_loss = loss_result
-                        val_pixel_total += pixel_loss.item()
-                        val_kld_total += kld_loss.item()
-                    
+                    # SimpleVAELoss retourne (total, recon, kld)
+                    total_loss, recon_loss, kld_loss = criterion(recon, targets, mu, logvar)
+                    val_recon_total += recon_loss.item()
+                    val_kld_total += kld_loss.item()
                     val_total += total_loss.item()
                     val_samples += inputs.shape[0]
                     try:
@@ -509,33 +475,21 @@ def train(config):
             except Exception:
                 logging.debug("Could not save reconstruction image for epoch %d", e)
 
-            # AMÉLIORATION: Log des composantes détaillées
-            train_pixel_avg = train_pixel_total / max(1, train_samples)
+            # Log des composantes (recon + KLD)
+            train_recon_avg = train_recon_total / max(1, train_samples)
             train_kld_avg = train_kld_total / max(1, train_samples)
-            val_pixel_avg = val_pixel_total / max(1, val_samples)
+            val_recon_avg = val_recon_total / max(1, val_samples)
             val_kld_avg = val_kld_total / max(1, val_samples)
             
-            metrics = {"train_ELBO": train_loss, "test_ELBO": test_loss, "test_SSIM": avg_ssim}
-            
-            # Ajout composantes dans metrics
-            if train_vgg_total > 0:
-                train_vgg_avg = train_vgg_total / max(1, train_samples)
-                val_vgg_avg = val_vgg_total / max(1, val_samples)
-                metrics.update({
-                    "train_pixel_loss": train_pixel_avg,
-                    "train_vgg_loss": train_vgg_avg,
-                    "train_kld_loss": train_kld_avg,
-                    "test_pixel_loss": val_pixel_avg,
-                    "test_vgg_loss": val_vgg_avg,
-                    "test_kld_loss": val_kld_avg,
-                })
-            else:
-                metrics.update({
-                    "train_pixel_loss": train_pixel_avg,
-                    "train_kld_loss": train_kld_avg,
-                    "test_pixel_loss": val_pixel_avg,
-                    "test_kld_loss": val_kld_avg,
-                })
+            metrics = {
+                "train_ELBO": train_loss, 
+                "test_ELBO": test_loss, 
+                "test_SSIM": avg_ssim,
+                f"train_{recon_loss_name}_loss": train_recon_avg,
+                "train_kld_loss": train_kld_avg,
+                f"test_{recon_loss_name}_loss": val_recon_avg,
+                "test_kld_loss": val_kld_avg,
+            }
             
             if wandb_log is not None:
                 wandb_log(metrics)
@@ -547,15 +501,12 @@ def train(config):
                 except Exception:
                     pass
                 
-                # AMÉLIORATION: Log composantes séparées
+                # Log composantes (recon + KLD avec noms dynamiques)
                 try:
-                    writer.add_scalar("train/pixel_loss", train_pixel_avg, e)
+                    writer.add_scalar(f"train/{recon_loss_name}_loss", train_recon_avg, e)
                     writer.add_scalar("train/kld_loss", train_kld_avg, e)
-                    writer.add_scalar("test/pixel_loss", val_pixel_avg, e)
+                    writer.add_scalar(f"test/{recon_loss_name}_loss", val_recon_avg, e)
                     writer.add_scalar("test/kld_loss", val_kld_avg, e)
-                    if train_vgg_total > 0:
-                        writer.add_scalar("train/vgg_loss", train_vgg_avg, e)
-                        writer.add_scalar("test/vgg_loss", val_vgg_avg, e)
                 except Exception:
                     pass
             
