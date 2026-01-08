@@ -9,16 +9,69 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class SPPLayer(nn.Module):
-    def __init__(self, pool_sizes=[1, 2, 4]):
-        super(SPPLayer, self).__init__()
-        self.pools = nn.ModuleList([nn.AdaptiveAvgPool2d(s) for s in pool_sizes])
+class MaskedGroupNorm(nn.Module):
+    def __init__(self, num_groups, num_channels, eps=1e-5):
+        super().__init__()
+        self.num_groups = num_groups
+        self.num_channels = num_channels
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(1, num_channels, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
 
-    def forward(self, x):
+    def forward(self, x, mask):
+        # Si pas de masque, comportement standard
+        if mask is None:
+            return F.group_norm(x, self.num_groups, self.weight, self.bias, self.eps)
+
+        B, C, H, W = x.shape
+        G = self.num_groups
+        
+        # Reshape pour séparer les groupes
+        x_g = x.view(B, G, C // G, H, W)
+        mask_g = mask.view(B, 1, 1, H, W) # Broadcast sur les groupes
+
+        # Moyenne pondérée (somme / compte)
+        x_sum = (x_g * mask_g).sum(dim=[2, 3, 4], keepdim=True)
+        mask_sum = mask_g.expand_as(x_g).sum(dim=[2, 3, 4], keepdim=True)
+        mean = x_sum / (mask_sum + self.eps)
+
+        # Variance pondérée
+        var_sum = ((x_g - mean).pow(2) * mask_g).sum(dim=[2, 3, 4], keepdim=True)
+        var = var_sum / (mask_sum + self.eps)
+
+        # Normalisation + Affine
+        x_norm = (x_g - mean) / torch.sqrt(var + self.eps)
+        x_norm = x_norm.view(B, C, H, W) * mask
+        
+        return x_norm * self.weight + self.bias
+
+
+class MaskedSPPLayer(nn.Module):
+    def __init__(self, pool_sizes=[1, 2, 4]):
+        super().__init__()
+        self.pool_sizes = pool_sizes
+
+    def forward(self, x, mask=None):
         batch_size = x.size(0)
         features = []
-        for pool in self.pools:
-            features.append(pool(x).view(batch_size, -1))
+        
+        # Appliquer masque pour sécurité (zéros parfaits sur padding)
+        if mask is not None:
+            x = x * mask
+        
+        for size in self.pool_sizes:
+            if mask is None:
+                pool = F.adaptive_avg_pool2d(x, (size, size))
+            else:
+                # Moyenne masquée adaptative
+                x_sum = F.adaptive_avg_pool2d(x, (size, size)) 
+                mask_sum = F.adaptive_avg_pool2d(mask, (size, size))
+                # x_sum est en fait Moyenne(x), mask_sum est Moyenne(mask)
+                # Le ratio corrige la dilution par les zéros
+                pool = x_sum / (mask_sum + 1e-6)
+                
+            features.append(pool.view(batch_size, -1))
+            
         return torch.cat(features, dim=1)
 
 
@@ -54,33 +107,41 @@ class CBAM(nn.Module):
         return out * spatial_out
 
 class ResidualBlock(nn.Module):
-    """Bloc ResNet Amélioré avec Attention CBAM"""
     def __init__(self, in_c, out_c, stride=1):
         super().__init__()
         self.conv1 = nn.Conv2d(in_c, out_c, 3, stride, 1, bias=False)
-        self.gn1 = nn.GroupNorm(32, out_c)
-        self.conv2 = nn.Conv2d(out_c, out_c, 3, 1, 1, bias=False)
-        self.gn2 = nn.GroupNorm(32, out_c)
+        self.gn1 = MaskedGroupNorm(32, out_c) 
         
-        # === AJOUT DE L'ATTENTION ===
-        self.cbam = CBAM(out_c)
-        # ============================
+        self.conv2 = nn.Conv2d(out_c, out_c, 3, 1, 1, bias=False)
+        self.gn2 = MaskedGroupNorm(32, out_c)
+        
+        self.cbam = CBAM(out_c) 
         
         self.shortcut = nn.Sequential()
-        if stride != 1 or in_c != out_c:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_c, out_c, 1, stride, bias=False),
-                nn.GroupNorm(32, out_c)
-            )
+        self.use_projection = (stride != 1 or in_c != out_c)
+        if self.use_projection:
+            self.shortcut_conv = nn.Conv2d(in_c, out_c, 1, stride, bias=False)
+            self.shortcut_gn = MaskedGroupNorm(32, out_c)
 
-    def forward(self, x):
-        out = F.relu(self.gn1(self.conv1(x)))
-        out = self.gn2(self.conv2(out))
+    def forward(self, x, mask=None):
+        # Downsample le masque si stride > 1
+        if mask is not None and mask.shape[2] != x.shape[2]:
+            mask = F.interpolate(mask, size=x.shape[2:], mode='nearest')
+
+        out = self.conv1(x)
+        out = F.relu(self.gn1(out, mask)) # Passe le masque
         
-        # Application de l'attention avant l'addition
+        out = self.conv2(out)
+        out = self.gn2(out, mask) # Passe le masque
+        
         out = self.cbam(out)
         
-        out += self.shortcut(x)
+        identity = x
+        if self.use_projection:
+            identity = self.shortcut_conv(identity)
+            identity = self.shortcut_gn(identity, mask) # Passe le masque
+            
+        out += identity
         return F.relu(out)
 
 class VAE(nn.Module):
@@ -114,7 +175,7 @@ class VAE(nn.Module):
             self.enc_block3,
         )
 
-        self.spp = SPPLayer(self.spp_levels)
+        self.spp = MaskedSPPLayer(self.spp_levels)
         self.spp_out_dim = 512 * sum([s * s for s in self.spp_levels])
 
         self.fc_mu = nn.Linear(self.spp_out_dim, self.latent_dim)
@@ -214,21 +275,59 @@ class VAE(nn.Module):
         
         return recon
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         orig_h, orig_w = x.shape[2], x.shape[3]
         
-        # Encoder avec sauvegarde des features pour skip connections
-        if self.use_skip_connections:
-            e1 = self.enc_conv1(x)           # features à résolution élevée
-            e2 = self.enc_block1(e1)         # 128 canaux
-            e3 = self.enc_block2(e2)         # 256 canaux
-            features = self.enc_block3(e3)   # 512 canaux (bottleneck)
-        else:
-            features = self.encoder(x)
+        # --- Encoder avec propagation du masque ---
         
-        pooled = self.spp(features)
+        # enc_conv1 (manuel car c'est un Sequential dans ton code actuel)
+        e1 = self.enc_conv1[0](x) # Conv
+        e1 = self.enc_conv1[1](e1) # GN (Standard)
+        e1 = self.enc_conv1[2](e1) # ReLU
+        e1 = self.enc_conv1[3](e1) # MaxPool
+        
+        # Maintenant on a un masque 1/2 taille (MaxPool stride 2)
+        if mask is not None:
+            m1 = F.interpolate(mask, size=e1.shape[2:], mode='nearest')
+        else:
+            m1 = None
+
+        # Blocs résiduels (qui acceptent le masque maintenant)
+        e2 = self.enc_block1(e1, mask=m1)
+        if mask is not None:
+             m2 = F.interpolate(mask, size=e2.shape[2:], mode='nearest')
+        else: m2 = None
+
+        e3 = self.enc_block2(e2, mask=m2)
+        if mask is not None:
+             m3 = F.interpolate(mask, size=e3.shape[2:], mode='nearest')
+        else: m3 = None
+
+        if self.use_skip_connections:
+            features = self.enc_block3(e3, mask=m3)
+        else:
+            features = self.enc_block3(e3, mask=m3)
+        
+        if mask is not None:
+            m_feat = F.interpolate(mask, size=features.shape[2:], mode='nearest')
+        else:
+            m_feat = None
+        
+        # Masked SPP
+        pooled = self.spp(features, mask=m_feat)
         mu, logvar = self.fc_mu(pooled), self.fc_logvar(pooled)
         z = self.reparameterize(mu, logvar)
+
+        # Decode
+        recon_small = self.decode(z)
+        
+        recon = F.interpolate(recon_small, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
+        
+        # Appliquer le masque final sur la reconstruction pour nettoyer la sortie
+        if mask is not None:
+            recon = recon * mask
+            
+        return recon, mu, logvar
 
         # Decoder avec skip connections U-Net style
         d = self.fc_decode(z)

@@ -32,16 +32,17 @@ except Exception:
 
 
 # ==================== MIXUP / CUTMIX ====================
-def mixup_data(x, y, alpha=0.2):
+def mixup_data(x, y, alpha=0.2, mask=None):
     """Apply Mixup augmentation.
     
     Args:
         x: Input images (batch)
         y: Target images (batch)
         alpha: Mixup parameter (higher = more mixing)
+        mask: Optional mask tensor (batch)
     
     Returns:
-        Mixed inputs, mixed targets, lambda coefficient
+        Mixed inputs, mixed targets, (mixed_mask if mask provided), lambda coefficient
     """
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
@@ -53,20 +54,25 @@ def mixup_data(x, y, alpha=0.2):
     
     mixed_x = lam * x + (1 - lam) * x[index]
     mixed_y = lam * y + (1 - lam) * y[index]
+
+    if mask is not None:
+        mixed_mask = lam * mask + (1 - lam) * mask[index]
+        return mixed_x, mixed_y, mixed_mask, lam
     
     return mixed_x, mixed_y, lam
 
 
-def cutmix_data(x, y, alpha=1.0):
+def cutmix_data(x, y, alpha=1.0, mask=None):
     """Apply CutMix augmentation.
     
     Args:
         x: Input images (batch)
         y: Target images (batch)
         alpha: CutMix parameter
+        mask: Optional mask tensor
     
     Returns:
-        CutMix inputs, CutMix targets, lambda coefficient
+        CutMix inputs, CutMix targets, (mixed_mask), lambda coefficient
     """
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
@@ -99,6 +105,11 @@ def cutmix_data(x, y, alpha=1.0):
     
     # Adjust lambda to reflect actual area ratio
     lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (W * H))
+
+    if mask is not None:
+        mask_cutmix = mask.clone()
+        mask_cutmix[:, :, bby1:bby2, bbx1:bbx2] = mask[index, :, bby1:bby2, bbx1:bbx2]
+        return x_cutmix, y_cutmix, mask_cutmix, lam
     
     return x_cutmix, y_cutmix, lam
 
@@ -332,25 +343,27 @@ def train(config):
             mix_prob = optim_conf.get("mix_prob", 0.5)  # Probabilité d'appliquer mix
             
             pbar = tqdm(train_loader, desc=f"Epoch {e}/{config['nepochs']}", dynamic_ncols=True)
-            for i, (inputs, targets) in enumerate(pbar):
-                inputs, targets = inputs.to(device), targets.to(device)
+            for i, (inputs, targets, masks) in enumerate(pbar):
+                inputs = inputs.to(device)
+                targets = targets.to(device)
+                masks = masks.to(device)
                 
                 # AMÉLIORATION: Apply Mixup/CutMix avec probabilité
                 apply_mix = (use_mixup or use_cutmix) and np.random.rand() < mix_prob
                 if apply_mix:
                     if use_mixup and (not use_cutmix or np.random.rand() < 0.5):
-                        inputs, targets, lam = mixup_data(inputs, targets, mixup_alpha)
+                        inputs, targets, masks, lam = mixup_data(inputs, targets, mixup_alpha, mask=masks)
                     elif use_cutmix:
-                        inputs, targets, lam = cutmix_data(inputs, targets, cutmix_alpha)
+                        inputs, targets, masks, lam = cutmix_data(inputs, targets, cutmix_alpha, mask=masks)
                 
                 # AMÉLIORATION: Forward pass avec AMP si activé
                 if use_amp:
                     with autocast():
-                        recon, mu, logvar = model(inputs)
-                        loss_result = criterion(recon, targets, mu, logvar)
+                        recon, mu, logvar = model(inputs, mask=masks)
+                        loss_result = criterion(recon, targets, mu, logvar, mask=masks)
                 else:
-                    recon, mu, logvar = model(inputs)
-                    loss_result = criterion(recon, targets, mu, logvar)
+                    recon, mu, logvar = model(inputs, mask=masks)
+                    loss_result = criterion(recon, targets, mu, logvar, mask=masks)
                 
                 # SimpleVAELoss retourne toujours 3 valeurs: (total, recon, kld)
                 total_loss, recon_loss, kld_loss = loss_result
@@ -410,12 +423,13 @@ def train(config):
             total_ssim = 0.0
             ssim_count = 0
             with torch.no_grad():
-                for inputs, targets in valid_loader:
+                for inputs, targets, masks in valid_loader:
                     inputs, targets = inputs.to(device), targets.to(device)
-                    recon, mu, logvar = model(inputs)
+                    masks = masks.to(device)
+                    recon, mu, logvar = model(inputs, mask=masks)
                     
                     # SimpleVAELoss retourne (total, recon, kld)
-                    total_loss, recon_loss, kld_loss = criterion(recon, targets, mu, logvar)
+                    total_loss, recon_loss, kld_loss = criterion(recon, targets, mu, logvar, mask=masks)
                     val_recon_total += recon_loss.item()
                     val_kld_total += kld_loss.item()
                     val_total += total_loss.item()
@@ -467,9 +481,10 @@ def train(config):
             # Recon preview
             try:
                 with torch.no_grad():
-                    sample_inputs, sample_targets = next(iter(valid_loader))
+                    sample_inputs, sample_targets, sample_masks = next(iter(valid_loader))
                     sample_inputs, sample_targets = sample_inputs.to(device), sample_targets.to(device)
-                    sample_recon, _, _ = model(sample_inputs)
+                    sample_masks = sample_masks.to(device)
+                    sample_recon, _, _ = model(sample_inputs, mask=sample_masks)
                     comparison = torch.cat([sample_targets.cpu(), sample_recon.cpu()])
                     from torchvision.utils import save_image, make_grid
 

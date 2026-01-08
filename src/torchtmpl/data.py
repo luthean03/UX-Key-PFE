@@ -119,6 +119,43 @@ class VariableSizeDataset(Dataset):
 
         return noisy_tensor, clean_tensor
 
+def padded_masked_collate(batch):
+    """
+    Assemble un batch d'images variables avec padding et masque binaire.
+    Retourne: (padded_images, padded_targets, masks)
+    """
+    # batch est une liste de tuples (noisy, clean) retournés par __getitem__
+    inputs = [item[0] for item in batch]
+    targets = [item[1] for item in batch]
+
+    # 1. Trouver les dimensions max du batch
+    max_h = max([img.shape[1] for img in inputs])
+    max_w = max([img.shape[2] for img in inputs])
+
+    # Arrondir au multiple de 32 supérieur (pour le VAE qui divise par 32)
+    stride = 32
+    max_h = ((max_h + stride - 1) // stride) * stride
+    max_w = ((max_w + stride - 1) // stride) * stride
+
+    B = len(batch)
+    # Tenseurs remplis de zéros (padding par défaut)
+    padded_inputs = torch.zeros(B, 1, max_h, max_w)
+    padded_targets = torch.zeros(B, 1, max_h, max_w)
+    masks = torch.zeros(B, 1, max_h, max_w)
+
+    for i in range(B):
+        h, w = inputs[i].shape[1], inputs[i].shape[2]
+        
+        # Copier l'image en haut à gauche
+        padded_inputs[i, :, :h, :w] = inputs[i]
+        padded_targets[i, :, :h, :w] = targets[i]
+        
+        # Créer le masque (1 = pixel valide, 0 = padding)
+        masks[i, :, :h, :w] = 1.0
+
+    return padded_inputs, padded_targets, masks
+
+
 def get_dataloaders(data_config, use_cuda):
     noise = float(data_config.get("noise_level", 0.0))
     # On définit une limite de sécurité (2048 pixels de haut est suffisant pour apprendre les patterns)
@@ -200,6 +237,7 @@ def get_dataloaders(data_config, use_cuda):
         pin_memory=use_cuda,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
         generator=g,
+        collate_fn=padded_masked_collate,
     )
     valid_loader = DataLoader(
         valid_dataset,
@@ -208,6 +246,7 @@ def get_dataloaders(data_config, use_cuda):
         num_workers=num_workers,
         pin_memory=use_cuda,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
+        collate_fn=padded_masked_collate,
     )
 
     # Best-effort input shape (C, H, W) for model factory + torchinfo.

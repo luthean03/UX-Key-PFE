@@ -21,8 +21,13 @@ class SimpleVAELoss(nn.Module):
         self.mode = mode
         self.beta = beta
 
-    def forward(self, recon_x, x, mu, logvar):
-        if self.mode == 'mse':
+    def forward(self, recon_x, x, mu, logvar, mask=None):
+        # Reconstruction Loss Masquée
+        if mask is not None:
+            # L1 Loss pondérée par le masque
+            diff = torch.abs(recon_x - x) * mask
+            recon_loss = diff.sum() # Somme absolue
+        elif self.mode == 'mse':
             recon_loss = F.mse_loss(recon_x, x, reduction='sum')
         elif self.mode == 'l1':
             recon_loss = F.l1_loss(recon_x, x, reduction='sum')
