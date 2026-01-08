@@ -21,7 +21,8 @@ class MaskedGroupNorm(nn.Module):
     def forward(self, x, mask):
         # Si pas de masque, comportement standard
         if mask is None:
-            return F.group_norm(x, self.num_groups, self.weight, self.bias, self.eps)
+            # F.group_norm attend un poids de taille (C,), pas (1, C, 1, 1)
+            return F.group_norm(x, self.num_groups, self.weight.squeeze(), self.bias.squeeze(), self.eps)
 
         B, C, H, W = x.shape
         G = self.num_groups
