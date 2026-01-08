@@ -124,22 +124,30 @@ class ResidualBlock(nn.Module):
             self.shortcut_gn = MaskedGroupNorm(32, out_c)
 
     def forward(self, x, mask=None):
-        # Downsample le masque si stride > 1
-        if mask is not None and mask.shape[2] != x.shape[2]:
+        # Assurer que le masque d'entrée correspond à l'entrée x
+        if mask is not None and mask.shape[2:] != x.shape[2:]:
             mask = F.interpolate(mask, size=x.shape[2:], mode='nearest')
 
         out = self.conv1(x)
-        out = F.relu(self.gn1(out, mask)) # Passe le masque
+        
+        # Préparer le masque pour la sortie (peut avoir rétréci si stride > 1)
+        # Note: ceci devient le masque actif pour out, gn1, conv2, gn2
+        mask_out = mask
+        if mask is not None and mask.shape[2:] != out.shape[2:]:
+            mask_out = F.interpolate(mask, size=out.shape[2:], mode='nearest')
+
+        out = F.relu(self.gn1(out, mask_out)) 
         
         out = self.conv2(out)
-        out = self.gn2(out, mask) # Passe le masque
+        out = self.gn2(out, mask_out) 
         
         out = self.cbam(out)
         
         identity = x
         if self.use_projection:
             identity = self.shortcut_conv(identity)
-            identity = self.shortcut_gn(identity, mask) # Passe le masque
+            # shortcut_conv a le même stride que conv1, donc la sortie a la taille de mask_out
+            identity = self.shortcut_gn(identity, mask_out) 
             
         out += identity
         return F.relu(out)
