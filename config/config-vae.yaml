@@ -46,7 +46,7 @@ model:
 loss:
   name: "l1"             # VGG + Pixel + KLD
   beta_kld: 1.0                  # β-VAE: CRITIQUE pour clusters structurés + interpolations cohérentes
-  warmup_epochs: 0              # KLD warmup 0 → 1.0 (évite posterior collapse)
+  warmup_epochs: 100              # KLD warmup 0 → 1.0 (évite posterior collapse)
 
 # ==================== OPTIMIZER (Démarrage plus conservateur) ====================
 optim:
