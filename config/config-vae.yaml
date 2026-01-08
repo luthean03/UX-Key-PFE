@@ -8,7 +8,7 @@
 resume: "/usr/users/sdim/sdim_31/UX-Key-PFE/logs/VAE_12/best_model.pt"
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled_1"
+  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled"
   archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png"  # Wireframes étiquetés pour métriques latentes
   batch_size: 16                    # Requis pour tailles variables
   num_workers: 8                 # Parallélisation I/O
@@ -59,9 +59,9 @@ optim:
   scheduler:
     name: "CosineAnnealingWarmRestarts"  # était: ReduceLROnPlateau
     params:
-      T_0: 10                    # Redémarre tous les 10 epochs
+      T_0: 100                    # Redémarre tous les 10 epochs
       T_mult: 2                  # Double la période après chaque restart
-      eta_min: 0.00003           # LR minimum (plancher) - était 3e-05
+      eta_min: 0.000003           # LR minimum (plancher) - était 3e-05
       verbose: true
 
 # ==================== OPTIMIZATION ====================
@@ -94,7 +94,7 @@ logging:
   #   entity: "your-team"
 
 # ==================== TRAINING ====================
-nepochs: 100                     # Nombre total d'epochs
+nepochs: 1000                     # Nombre total d'epochs
 
 # ==================== EARLY STOPPING (NOUVEAU) ====================
 early_stopping:
