@@ -196,6 +196,28 @@ def train(config):
     model = models.build_model(model_config, input_size, num_classes)
     model.to(device)
 
+    # Resume from checkpoint if specified in config
+    resume_path = config.get("resume")
+    if resume_path:
+        logging.info(f"Attempting to resume from: {resume_path}")
+        if os.path.isfile(resume_path):
+            try:
+                # Load state dict
+                state_dict = torch.load(resume_path, map_location=device)
+                
+                # Handle potential key mismatches (e.g. if model was saved with DataParallel)
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    name = k[7:] if k.startswith('module.') else k 
+                    new_state_dict[name] = v
+                    
+                model.load_state_dict(new_state_dict)
+                logging.info(f"Successfully loaded checkpoint: {resume_path}")
+            except Exception as e:
+                logging.error(f"Error loading checkpoint: {e}")
+        else:
+            logging.warning(f"Checkpoint file not found: {resume_path}")
+
     # Loss
     logging.info("= Loss")
     model_is_vae = model_config.get("class", "").lower() == "vae" or model_config.get("type", "").lower() == "vae"

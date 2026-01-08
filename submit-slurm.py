@@ -6,9 +6,10 @@ import sys
 import subprocess
 import tempfile
 import shlex
+import yaml # Ajout
 
 
-def makejob(commit_id, config_b64, nruns, command, extra_args: str = ""):
+def makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, extra_args: str = ""):
     exclude_list = "dani[01-17],tx[00-16],sh[10-19],sh00"
     return f"""#!/bin/bash
 
@@ -35,17 +36,26 @@ mkdir -p $TMPDIR/code
 # Copie du code sur le noeud local pour I/O rapide (exclure logs/datasets lourds)
 rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude 'vae_dataset*' . $TMPDIR/code
 
-# Copie des archetypes pour métriques latentes (si le dossier existe)
-if [[ -d "${{current_dir}}/archetypes_png" ]]; then
-    echo "✅ Copying archetypes to node..."
-    rsync -r "${{current_dir}}/archetypes_png/" "$TMPDIR/code/archetypes_png/"
+# Copie des archetypes pour métriques latentes (depuis le path YAML)
+SRC_ARCHETYPES="{archetypes_src}"
+# Gérer paths relatifs (relative au dossier d'exécution)
+if [[ "$SRC_ARCHETYPES" != /* ]]; then
+    SRC_ARCHETYPES="$current_dir/$SRC_ARCHETYPES"
+fi
+if [[ -d "$SRC_ARCHETYPES" ]]; then
+    echo "✅ Copying archetypes from $SRC_ARCHETYPES to node..."
+    rsync -r "$SRC_ARCHETYPES/" "$TMPDIR/code/archetypes_png/"
     echo "✅ Archetypes copied: $(ls $TMPDIR/code/archetypes_png | wc -l) files"
 fi
 
-# Copie du dataset d'entraînement sur le nœud (I/O local beaucoup plus rapide)
-if [[ -d "${{current_dir}}/vae_dataset_scaled" ]]; then
-    echo "✅ Copying training dataset to node..."
-    rsync -r "${{current_dir}}/vae_dataset_scaled/" "$TMPDIR/code/vae_dataset/"
+# Copie du dataset d'entraînement sur le nœud (depuis le path YAML)
+SRC_DATA="{data_src}"
+if [[ "$SRC_DATA" != /* ]]; then
+    SRC_DATA="$current_dir/$SRC_DATA"
+fi
+if [[ -d "$SRC_DATA" ]]; then
+    echo "✅ Copying training dataset to node from $SRC_DATA..."
+    rsync -r "$SRC_DATA/" "$TMPDIR/code/vae_dataset/"
     echo "✅ Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
 fi
 
@@ -135,6 +145,14 @@ if archetypes_dir:
         data_cfg['archetypes_dir'] = str(base / arch_path)
         print(f"⚠️  Using shared filesystem archetypes: {{base / arch_path}}")
     cfg['data'] = data_cfg
+
+# Patch resume checkpoint (NOUVEAU)
+resume_path = cfg.get('resume')
+if resume_path:
+    r_path = pathlib.Path(resume_path).expanduser()
+    if not r_path.is_absolute():
+        cfg['resume'] = str(base / r_path)
+        print(f"✅ Patched resume path to absolute: {cfg['resume']}")
 
 # Patch test checkpoint
 test_cfg = cfg.get('test') or dict()
@@ -254,7 +272,18 @@ os.system("mkdir -p logslurms")
 with open(configpath, "rb") as fp:
     config_b64 = base64.b64encode(fp.read()).decode("ascii")
 
-job = makejob(commit_id, config_b64, nruns, command, extra_args=extra_args)
+# Parse yaml to extract paths for rsync (avoid hardcoded paths)
+with open(configpath, "r") as fp:
+    try:
+        cfg_rsync = yaml.safe_load(fp)
+        data_src = cfg_rsync.get('data', {}).get('data_dir', 'vae_dataset_scaled')
+        archetypes_src = cfg_rsync.get('data', {}).get('archetypes_dir', 'archetypes_png')
+    except Exception as e:
+        print(f"Warning: Could not parse paths from yaml ({e}), using default fallback.")
+        data_src = 'vae_dataset_scaled'
+        archetypes_src = 'archetypes_png'
+
+job = makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, extra_args=extra_args)
 if dry_run:
     print(job)
     sys.exit(0)
