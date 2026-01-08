@@ -43,9 +43,9 @@ if [[ -d "${{current_dir}}/archetypes_png" ]]; then
 fi
 
 # Copie du dataset d'entraînement sur le nœud (I/O local beaucoup plus rapide)
-if [[ -d "${{current_dir}}/vae_dataset" ]]; then
+if [[ -d "${{current_dir}}/vae_dataset_scaled" ]]; then
     echo "✅ Copying training dataset to node..."
-    rsync -r "${{current_dir}}/vae_dataset/" "$TMPDIR/code/vae_dataset/"
+    rsync -r "${{current_dir}}/vae_dataset_scaled/" "$TMPDIR/code/vae_dataset/"
     echo "✅ Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
 fi
 
