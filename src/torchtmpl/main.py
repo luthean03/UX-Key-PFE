@@ -485,13 +485,29 @@ def train(config):
                     sample_inputs, sample_targets = sample_inputs.to(device), sample_targets.to(device)
                     sample_masks = sample_masks.to(device)
                     sample_recon, _, _ = model(sample_inputs, mask=sample_masks)
-                    comparison = torch.cat([sample_targets.cpu(), sample_recon.cpu()])
+                    
+                    # Select first image in batch and crop to valid mask area
+                    idx = 0
+                    tgt = sample_targets[idx].cpu()  # (C, H, W)
+                    rec = sample_recon[idx].cpu()    # (C, H, W)
+                    msk = sample_masks[idx].cpu()    # (1, H, W)
+                    
+                    # Crop using mask logic
+                    non_zero = msk[0].nonzero()
+                    if non_zero.size(0) > 0:
+                        h_end = non_zero[:, 0].max().item() + 1
+                        w_end = non_zero[:, 1].max().item() + 1
+                        tgt = tgt[:, :h_end, :w_end]
+                        rec = rec[:, :h_end, :w_end]
+
+                    comparison = torch.stack([tgt, rec]) # (2, C, H, W)
                     from torchvision.utils import save_image, make_grid
 
-                    save_image(comparison, logdir / f"reconstruction_epoch_{e}.png", nrow=1)
+                    # nrow=2 => Input | Recon
+                    save_image(comparison, logdir / f"reconstruction_epoch_{e}.png", nrow=2)
                     if writer is not None:
                         try:
-                            writer.add_image("reconstructions", make_grid(comparison, nrow=1), e)
+                            writer.add_image("reconstructions", make_grid(comparison, nrow=2), e)
                         except Exception:
                             pass
             except Exception:
