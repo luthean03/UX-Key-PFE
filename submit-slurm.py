@@ -152,7 +152,7 @@ if resume_path:
     r_path = pathlib.Path(resume_path).expanduser()
     if not r_path.is_absolute():
         cfg['resume'] = str(base / r_path)
-        print(f"✅ Patched resume path to absolute: {cfg['resume']}")
+        print(f"✅ Patched resume path to absolute: {{cfg['resume']}}")
 
 # Patch test checkpoint
 test_cfg = cfg.get('test') or dict()
