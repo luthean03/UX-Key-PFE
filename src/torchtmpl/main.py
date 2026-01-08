@@ -557,11 +557,12 @@ def train(config):
                 model.eval()
                 latents = []
                 with torch.no_grad():
-                    for i, (inputs, _) in enumerate(valid_loader):
+                    for i, (inputs, _, masks) in enumerate(valid_loader):
                         if i >= 1000:
                             break
                         inputs = inputs.to(device)
-                        _, mu, _ = model(inputs)
+                        masks = masks.to(device)
+                        _, mu, _ = model(inputs, mask=masks)
                         latents.append(mu.cpu().numpy())
                 if latents:
                     latents = np.concatenate(latents, axis=0)

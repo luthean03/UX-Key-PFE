@@ -342,11 +342,12 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
     train_indices = []
     
     with torch.no_grad():
-        for i, (inputs, _) in enumerate(train_loader):
+        for i, (inputs, _, masks) in enumerate(train_loader):
             if i >= max_samples:
                 break
             inputs = inputs.to(device)
-            _, mu, _ = model(inputs)
+            masks = masks.to(device)
+            _, mu, _ = model(inputs, mask=masks)
             train_latents.append(mu.cpu().numpy())
             train_indices.append(i)
     
