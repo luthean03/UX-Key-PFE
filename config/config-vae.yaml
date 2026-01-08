@@ -5,10 +5,10 @@
 # === RESUME TRAINING (Optionnel) ===
 # Chemin vers un checkpoint (.pt) pour reprendre l'entraînement
 # resume: "logs/VAE_XX/best_model.pt" 
-resume: "/usr/users/sdim/sdim_31/UX-Key-PFE/logs/VAE_11/best_model.pt"
+resume: "/usr/users/sdim/sdim_31/UX-Key-PFE/logs/VAE_12/best_model.pt"
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled"
+  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled_1"
   archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png"  # Wireframes étiquetés pour métriques latentes
   batch_size: 16                    # Requis pour tailles variables
   num_workers: 8                 # Parallélisation I/O
