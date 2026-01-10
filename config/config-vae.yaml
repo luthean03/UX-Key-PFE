@@ -4,10 +4,10 @@
 
 # === RESUME TRAINING (Optionnel) ===
 # Chemin vers un checkpoint (.pt) pour reprendre l'entraînement
-resume: "logs/VAE_13/last_model.pt" 
+resume: "logs/VAE_16/last_model.pt" 
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled_1"
+  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled"
   archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png"  # Wireframes étiquetés pour métriques latentes
   batch_size: 16                    # Requis pour tailles variables
   num_workers: 8                 # Parallélisation I/O
@@ -44,7 +44,7 @@ model:
 # ==================== LOSS (Optimisé pour STRUCTURE de l'espace latent) ====================
 loss:
   name: "l1"             # VGG + Pixel + KLD
-  beta_kld: 1                  # β-VAE: CRITIQUE pour clusters structurés + interpolations cohérentes
+  beta_kld: 0                  # β-VAE: CRITIQUE pour clusters structurés + interpolations cohérentes
   warmup_epochs: 0              # KLD warmup 0 → 1.0 (évite posterior collapse)
 
 # ==================== OPTIMIZER (Démarrage plus conservateur) ====================
