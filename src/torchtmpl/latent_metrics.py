@@ -177,10 +177,50 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-def generate_interpolation_video(model, latent1, latent2, archetype_img1, archetype_img2, device, num_steps=10, include_endpoints=True, target_height=512):
+def slerp(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
+    """Spherical Linear Interpolation (SLERP) between two latent codes.
+    
+    SLERP preserves the norm of latent vectors, providing smoother
+    interpolations than linear interpolation.
+    
+    Args:
+        z1: (latent_dim,) first latent code
+        z2: (latent_dim,) second latent code  
+        alpha: interpolation factor in [0, 1]
+        
+    Returns:
+        z_interp: interpolated latent code
+    """
+    # Normalize to unit vectors
+    z1_norm = z1 / (np.linalg.norm(z1) + 1e-8)
+    z2_norm = z2 / (np.linalg.norm(z2) + 1e-8)
+    
+    # Compute angle between vectors
+    dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
+    omega = np.arccos(dot)
+    sin_omega = np.sin(omega)
+    
+    # Handle nearly parallel vectors (use lerp instead)
+    if np.abs(sin_omega) < 1e-6:
+        return (1 - alpha) * z1 + alpha * z2
+    
+    # Scale back to original magnitudes (average of both)
+    scale1 = np.linalg.norm(z1)
+    scale2 = np.linalg.norm(z2)
+    scale = (1 - alpha) * scale1 + alpha * scale2
+    
+    z_interp = (np.sin((1 - alpha) * omega) / sin_omega) * z1_norm + \
+               (np.sin(alpha * omega) / sin_omega) * z2_norm
+    
+    return z_interp * scale
+
+
+def generate_interpolation_video(model, latent1, latent2, archetype_img1, archetype_img2, device, 
+                                  num_steps=10, include_endpoints=True, target_height=512,
+                                  method='slerp'):
     """Generate interpolation frames between two latents (for TensorBoard video).
     
-    Interpolates both in latent space AND geometrically (varying height/width)
+    Interpolates both in latent space (using SLERP) AND geometrically (varying height/width)
     to handle archetypes with different dimensions.
     
     Args:
@@ -193,6 +233,7 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
         num_steps: Number of interpolation steps (excluding endpoints if include_endpoints=True)
         include_endpoints: If True, add archetype reconstructions at start/end
         target_height: Resize all frames to this height for consistent visualization
+        method: 'slerp' (spherical, smoother) or 'lerp' (linear)
     
     Returns:
         torch.Tensor: (num_frames, C, H, W) interpolated frames or None if failed
@@ -220,10 +261,15 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
                 logging.warning(f"Endpoint 1 decode failed: {e}")
                 return None
         
-        # 2. Linear interpolation in latent space + geometric interpolation in pixel space
+        # 2. Interpolation in latent space (SLERP or LERP) + geometric interpolation
         alphas = np.linspace(0, 1, num_steps)
         for alpha in alphas:
-            z_interp = (1 - alpha) * latent1 + alpha * latent2
+            # Use SLERP for smoother interpolation
+            if method == 'slerp':
+                z_interp = slerp(latent1, latent2, alpha)
+            else:  # lerp
+                z_interp = (1 - alpha) * latent1 + alpha * latent2
+            
             z_interp_torch = torch.from_numpy(z_interp).unsqueeze(0).float().to(device)
             
             try:
