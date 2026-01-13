@@ -279,12 +279,18 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
                     if isinstance(archetype_img1, tuple):
                         img_t, mask_t, _, _ = archetype_img1
                         recon1, _, _ = model(img_t.to(device), mask=mask_t.to(device))
+                        # Crop reconstruction to original size (remove padding)
+                        recon1 = recon1[:, :, :orig_h1, :orig_w1]
                     else:
                         recon1, _, _ = model(archetype_img1.to(device))
                 else:
-                    # Fallback: decode depuis latent
+                    # Fallback: decode depuis latent with original size
                     z1_torch = torch.from_numpy(latent1).unsqueeze(0).float().to(device)
-                    recon1 = model.decode(z1_torch)
+                    try:
+                        recon1 = model.decode(z1_torch, output_size=(orig_h1, orig_w1))
+                    except TypeError:
+                        recon1 = model.decode(z1_torch)
+                        recon1 = F.interpolate(recon1, size=(orig_h1, orig_w1), mode='bilinear', align_corners=False)
                 reconstructions.append(recon1)
             except Exception as e:
                 logging.warning(f"Endpoint 1 decode failed: {e}")
@@ -333,12 +339,18 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
                     if isinstance(archetype_img2, tuple):
                         img_t, mask_t, _, _ = archetype_img2
                         recon2, _, _ = model(img_t.to(device), mask=mask_t.to(device))
+                        # Crop reconstruction to original size (remove padding)
+                        recon2 = recon2[:, :, :orig_h2, :orig_w2]
                     else:
                         recon2, _, _ = model(archetype_img2.to(device))
                 else:
-                    # Fallback: decode depuis latent
+                    # Fallback: decode depuis latent with original size
                     z2_torch = torch.from_numpy(latent2).unsqueeze(0).float().to(device)
-                    recon2 = model.decode(z2_torch)
+                    try:
+                        recon2 = model.decode(z2_torch, output_size=(orig_h2, orig_w2))
+                    except TypeError:
+                        recon2 = model.decode(z2_torch)
+                        recon2 = F.interpolate(recon2, size=(orig_h2, orig_w2), mode='bilinear', align_corners=False)
                 reconstructions.append(recon2)
             except Exception as e:
                 logging.warning(f"Endpoint 2 decode failed: {e}")
@@ -347,30 +359,15 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
     if len(reconstructions) == 0:
         return None
 
-    # Reconstructions may have variable HxW. To return a single tensor we place
-    # each frame centered on a canvas of size (max_h, max_w) and pad with zeros.
-    heights = [t.shape[2] for t in reconstructions]
-    widths = [t.shape[3] for t in reconstructions]
-    max_h = int(max(heights))
-    max_w = int(max(widths))
-
-    padded_frames = []
+    # Return frames as a list of native-size tensors (C, H, W) without extra padding
+    frames = []
     for t in reconstructions:
-        # t: (1, C, H, W) or (B, C, H, W) with B==1
+        # Ensure shape (1, C, H, W)
         if t.dim() == 3:
             t = t.unsqueeze(0)
-        _, C, h, w = t.shape
+        # squeeze batch dim -> (C, H, W)
+        frames.append(t[0].cpu())
 
-        pad_left = (max_w - w) // 2
-        pad_right = max_w - w - pad_left
-        pad_top = (max_h - h) // 2
-        pad_bottom = max_h - h - pad_top
-
-        t_padded = F.pad(t, (pad_left, pad_right, pad_top, pad_bottom))
-        padded_frames.append(t_padded)
-
-    # Stack and move to CPU
-    frames = torch.cat(padded_frames, dim=0).cpu()
     return frames
 
 
@@ -531,15 +528,80 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             )
             
             if interp_frames is not None:
-                # Save each frame separately - navigate between them via TensorBoard
-                frames_normalized = (interp_frames - interp_frames.min()) / (interp_frames.max() - interp_frames.min() + 1e-8)
-                for frame_idx, frame in enumerate(frames_normalized):
-                    writer.add_image(
-                        f"interpolations/{archetype_names[idx1]}_to_{archetype_names[idx2]}", 
-                        frame, 
-                        global_step=epoch * 1000 + frame_idx  # epoch*1000 groups frames by epoch
-                    )
-                logging.info(f"✅ Interpolation ({frames_normalized.shape[0]} frames) saved: {archetype_names[idx1]} → {archetype_names[idx2]}")
+                # interp_frames is a list of tensors (C,H,W) with variable sizes.
+                tag = f"interpolations/{archetype_names[idx1]}_to_{archetype_names[idx2]}"
+
+                # 0) Log preprocessed original archetype images (cropped to original size) as step 0 and final step
+                def _crop_original(ar_img_tuple):
+                    # ar_img_tuple: (padded_cpu, mask_cpu, orig_h, orig_w)
+                    padded_cpu, mask_cpu, oh, ow = ar_img_tuple
+                    # padded_cpu shape: (1, C, H, W)
+                    img = padded_cpu[0, :, :int(oh), :int(ow)].clone()
+                    return img
+
+                # If archetype images are tuples (padded, mask, orig_h, orig_w) we crop, else use as-is
+                if isinstance(img1, tuple):
+                    start_img = _crop_original(img1)
+                elif img1 is not None:
+                    start_img = img1[0].cpu() if img1.dim() == 4 else img1.cpu()
+                else:
+                    start_img = None
+
+                if isinstance(img2, tuple):
+                    end_img = _crop_original(img2)
+                elif img2 is not None:
+                    end_img = img2[0].cpu() if img2.dim() == 4 else img2.cpu()
+                else:
+                    end_img = None
+
+                step_base = epoch * 1000
+                current_step = step_base
+                
+                # 1) Create grid: [preprocessed_1, reconstructed_1] at start
+                if start_img is not None and len(interp_frames) > 0:
+                    # Resize to same height for grid (use max height)
+                    recon1 = interp_frames[0]  # First frame is recon1
+                    max_h = max(start_img.shape[1], recon1.shape[1])
+                    
+                    # Resize both to same height keeping aspect ratio
+                    start_resized = F.interpolate(start_img.unsqueeze(0), size=(max_h, start_img.shape[2]), mode='bilinear', align_corners=False)[0]
+                    recon1_resized = F.interpolate(recon1.unsqueeze(0), size=(max_h, recon1.shape[2]), mode='bilinear', align_corners=False)[0]
+                    
+                    # Normalize each
+                    start_norm = (start_resized - start_resized.min()) / (start_resized.max() - start_resized.min() + 1e-8)
+                    recon1_norm = (recon1_resized - recon1_resized.min()) / (recon1_resized.max() - recon1_resized.min() + 1e-8)
+                    
+                    # Create grid side by side
+                    grid = torch.cat([start_norm, recon1_norm], dim=2)  # Concatenate horizontally
+                    writer.add_image(f"{tag}_grid_start", grid, global_step=current_step)
+                    current_step += 1
+
+                # 2) Log each interpolated frame at increasing steps
+                for frame_idx, frame in enumerate(interp_frames):
+                    # frame is (C,H,W)
+                    fnorm = (frame - frame.min()) / (frame.max() - frame.min() + 1e-8)
+                    writer.add_image(tag, fnorm, global_step=current_step)
+                    current_step += 1
+
+                # 3) Create grid: [reconstructed_2, preprocessed_2] at end
+                if end_img is not None and len(interp_frames) > 0:
+                    # Resize to same height for grid
+                    recon2 = interp_frames[-1]  # Last frame is recon2
+                    max_h = max(recon2.shape[1], end_img.shape[1])
+                    
+                    # Resize both to same height
+                    recon2_resized = F.interpolate(recon2.unsqueeze(0), size=(max_h, recon2.shape[2]), mode='bilinear', align_corners=False)[0]
+                    end_resized = F.interpolate(end_img.unsqueeze(0), size=(max_h, end_img.shape[2]), mode='bilinear', align_corners=False)[0]
+                    
+                    # Normalize each
+                    recon2_norm = (recon2_resized - recon2_resized.min()) / (recon2_resized.max() - recon2_resized.min() + 1e-8)
+                    end_norm = (end_resized - end_resized.min()) / (end_resized.max() - end_resized.min() + 1e-8)
+                    
+                    # Create grid side by side
+                    grid = torch.cat([recon2_norm, end_norm], dim=2)  # Concatenate horizontally
+                    writer.add_image(f"{tag}_grid_end", grid, global_step=current_step)
+
+                logging.info(f"✅ Interpolation ({len(interp_frames)} frames + 2 grids) saved: {archetype_names[idx1]} → {archetype_names[idx2]}")
         except Exception as e:
             logging.warning(f"Interpolation failed: {e}")
     
