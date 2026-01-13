@@ -72,14 +72,27 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
                 
                 # Transform to tensor
                 import torchvision.transforms.functional as TF
-                img_tensor = TF.to_tensor(img).unsqueeze(0).to(device)
-                
-                # Encode
-                _, mu, _ = model(img_tensor)
-                
+                img_tensor = TF.to_tensor(img).unsqueeze(0)
+
+                # Pad to multiple of 32 (same logic as padded_masked_collate)
+                stride = 32
+                _, _, h, w = img_tensor.unsqueeze(0).shape if img_tensor.dim() == 3 else img_tensor.shape
+                pad_h = ((h + stride - 1) // stride) * stride
+                pad_w = ((w + stride - 1) // stride) * stride
+
+                padded = torch.zeros(1, img_tensor.shape[1], pad_h, pad_w)
+                mask = torch.zeros(1, 1, pad_h, pad_w)
+                # copy top-left like collate
+                padded[0, :, :h, :w] = img_tensor[0]
+                mask[0, 0, :h, :w] = 1.0
+
+                # Encode using the padded tensor and mask (like training/validation)
+                _, mu, _ = model(padded.to(device), mask=mask.to(device))
+
                 latents.append(mu.cpu().numpy())
                 labels.append(idx)
-                images.append(img_tensor.cpu())  # Sauvegarder l'image
+                # Save tuple: (padded_image_cpu, mask_cpu, orig_h, orig_w)
+                images.append((padded.cpu(), mask.cpu(), h, w))  # Sauvegarder l'image et son masque
                 
             except Exception as e:
                 logging.warning(f"Failed to load {img_path.name}: {e}")
@@ -242,8 +255,20 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
     reconstructions = []
     
     # Get original dimensions for geometric interpolation
-    orig_h1, orig_w1 = archetype_img1.shape[2:] if archetype_img1 is not None else (target_height, target_height)
-    orig_h2, orig_w2 = archetype_img2.shape[2:] if archetype_img2 is not None else (target_height, target_height)
+    # archetype_imgX can be either None or a tuple returned by load_archetypes: (padded_img, mask, orig_h, orig_w)
+    if archetype_img1 is not None and isinstance(archetype_img1, tuple):
+        orig_h1, orig_w1 = int(archetype_img1[2]), int(archetype_img1[3])
+    elif archetype_img1 is not None:
+        orig_h1, orig_w1 = archetype_img1.shape[2:]
+    else:
+        orig_h1, orig_w1 = target_height, target_height
+
+    if archetype_img2 is not None and isinstance(archetype_img2, tuple):
+        orig_h2, orig_w2 = int(archetype_img2[2]), int(archetype_img2[3])
+    elif archetype_img2 is not None:
+        orig_h2, orig_w2 = archetype_img2.shape[2:]
+    else:
+        orig_h2, orig_w2 = target_height, target_height
     
     with torch.no_grad():
         # 1. Reconstruct archetype 1 (beginning) - use forward pass like validation
@@ -251,7 +276,11 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
             try:
                 if archetype_img1 is not None:
                     # Forward complet (encode + decode) comme pendant validation
-                    recon1, _, _ = model(archetype_img1.to(device))
+                    if isinstance(archetype_img1, tuple):
+                        img_t, mask_t, _, _ = archetype_img1
+                        recon1, _, _ = model(img_t.to(device), mask=mask_t.to(device))
+                    else:
+                        recon1, _, _ = model(archetype_img1.to(device))
                 else:
                     # Fallback: decode depuis latent
                     z1_torch = torch.from_numpy(latent1).unsqueeze(0).float().to(device)
@@ -301,7 +330,11 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
             try:
                 if archetype_img2 is not None:
                     # Forward complet (encode + decode) comme pendant validation
-                    recon2, _, _ = model(archetype_img2.to(device))
+                    if isinstance(archetype_img2, tuple):
+                        img_t, mask_t, _, _ = archetype_img2
+                        recon2, _, _ = model(img_t.to(device), mask=mask_t.to(device))
+                    else:
+                        recon2, _, _ = model(archetype_img2.to(device))
                 else:
                     # Fallback: decode depuis latent
                     z2_torch = torch.from_numpy(latent2).unsqueeze(0).float().to(device)

@@ -4,18 +4,18 @@
 
 # === RESUME TRAINING (Optionnel) ===
 # Chemin vers un checkpoint (.pt) pour reprendre l'entraînement
-resume: "logs/VAE_1/best_model.pt" 
+resume: "logs/VAE_17/best_model.pt" 
 
 data:
   data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled"
-  archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png"  # Wireframes étiquetés pour métriques latentes
+  archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
   batch_size: 16                    # Requis pour tailles variables
   num_workers: 8                 # Parallélisation I/O
   valid_ratio: 0.2               # 80/20 train/valid split
   seed: 42                       # Reproductibilité
   
   # Gestion mémoire
-  max_height: 2048               # Limite hauteur (crop si dépasse)
+  max_height: 3000               # Limite hauteur (crop si dépasse)
   
   # === DENOISING (Augmenté pour robustesse) ===
   noise_level: 0.20              # était: 0.15 → +33% bruit gaussien
