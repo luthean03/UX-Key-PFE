@@ -262,27 +262,36 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
                 return None
         
         # 2. Interpolation in latent space (SLERP or LERP) + geometric interpolation
-        alphas = np.linspace(0, 1, num_steps)
+        # If endpoints should be included separately, exclude alpha=0 and alpha=1
+        if include_endpoints:
+            alphas = np.linspace(0, 1, num_steps + 2)[1:-1]
+        else:
+            alphas = np.linspace(0, 1, num_steps)
+
         for alpha in alphas:
             # Use SLERP for smoother interpolation
             if method == 'slerp':
                 z_interp = slerp(latent1, latent2, alpha)
             else:  # lerp
                 z_interp = (1 - alpha) * latent1 + alpha * latent2
-            
+
             z_interp_torch = torch.from_numpy(z_interp).unsqueeze(0).float().to(device)
-            
+
+            # Compute desired output geometry BEFORE decoding (avoid deforming after decode)
+            h_interp = int((1 - alpha) * orig_h1 + alpha * orig_h2)
+            w_interp = int((1 - alpha) * orig_w1 + alpha * orig_w2)
+
             try:
-                recon = model.decode(z_interp_torch)
-                
-                # Interpolate geometry: smoothly vary height and width between the two archetypes
-                h_interp = int((1 - alpha) * orig_h1 + alpha * orig_h2)
-                w_interp = int((1 - alpha) * orig_w1 + alpha * orig_w2)
-                
-                # Resize this frame to interpolated dimensions
-                recon_resized = F.interpolate(recon, size=(h_interp, w_interp), 
-                                             mode='bilinear', align_corners=False)
-                reconstructions.append(recon_resized)
+                # Prefer decoder API that accepts an output_size argument
+                try:
+                    recon = model.decode(z_interp_torch, output_size=(h_interp, w_interp))
+                except TypeError:
+                    # Fallback: decode then resize (for decoders without output_size param)
+                    recon = model.decode(z_interp_torch)
+                    recon = F.interpolate(recon, size=(h_interp, w_interp), 
+                                           mode='bilinear', align_corners=False)
+
+                reconstructions.append(recon)
             except Exception as e:
                 logging.warning(f"Interpolation decode failed ({e})")
                 return None
@@ -304,10 +313,31 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
     
     if len(reconstructions) == 0:
         return None
-    
-    # Stack frames without normalization - return raw VAE outputs
-    # Format: (num_frames, C, H, W)
-    frames = torch.cat(reconstructions, dim=0).cpu()
+
+    # Reconstructions may have variable HxW. To return a single tensor we place
+    # each frame centered on a canvas of size (max_h, max_w) and pad with zeros.
+    heights = [t.shape[2] for t in reconstructions]
+    widths = [t.shape[3] for t in reconstructions]
+    max_h = int(max(heights))
+    max_w = int(max(widths))
+
+    padded_frames = []
+    for t in reconstructions:
+        # t: (1, C, H, W) or (B, C, H, W) with B==1
+        if t.dim() == 3:
+            t = t.unsqueeze(0)
+        _, C, h, w = t.shape
+
+        pad_left = (max_w - w) // 2
+        pad_right = max_w - w - pad_left
+        pad_top = (max_h - h) // 2
+        pad_bottom = max_h - h - pad_top
+
+        t_padded = F.pad(t, (pad_left, pad_right, pad_top, pad_bottom))
+        padded_frames.append(t_padded)
+
+    # Stack and move to CPU
+    frames = torch.cat(padded_frames, dim=0).cpu()
     return frames
 
 
