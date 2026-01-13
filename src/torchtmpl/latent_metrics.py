@@ -279,12 +279,18 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
                     if isinstance(archetype_img1, tuple):
                         img_t, mask_t, _, _ = archetype_img1
                         recon1, _, _ = model(img_t.to(device), mask=mask_t.to(device))
+                        # Crop reconstruction to original size (remove padding)
+                        recon1 = recon1[:, :, :orig_h1, :orig_w1]
                     else:
                         recon1, _, _ = model(archetype_img1.to(device))
                 else:
-                    # Fallback: decode depuis latent
+                    # Fallback: decode depuis latent with original size
                     z1_torch = torch.from_numpy(latent1).unsqueeze(0).float().to(device)
-                    recon1 = model.decode(z1_torch)
+                    try:
+                        recon1 = model.decode(z1_torch, output_size=(orig_h1, orig_w1))
+                    except TypeError:
+                        recon1 = model.decode(z1_torch)
+                        recon1 = F.interpolate(recon1, size=(orig_h1, orig_w1), mode='bilinear', align_corners=False)
                 reconstructions.append(recon1)
             except Exception as e:
                 logging.warning(f"Endpoint 1 decode failed: {e}")
@@ -333,12 +339,18 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
                     if isinstance(archetype_img2, tuple):
                         img_t, mask_t, _, _ = archetype_img2
                         recon2, _, _ = model(img_t.to(device), mask=mask_t.to(device))
+                        # Crop reconstruction to original size (remove padding)
+                        recon2 = recon2[:, :, :orig_h2, :orig_w2]
                     else:
                         recon2, _, _ = model(archetype_img2.to(device))
                 else:
-                    # Fallback: decode depuis latent
+                    # Fallback: decode depuis latent with original size
                     z2_torch = torch.from_numpy(latent2).unsqueeze(0).float().to(device)
-                    recon2 = model.decode(z2_torch)
+                    try:
+                        recon2 = model.decode(z2_torch, output_size=(orig_h2, orig_w2))
+                    except TypeError:
+                        recon2 = model.decode(z2_torch)
+                        recon2 = F.interpolate(recon2, size=(orig_h2, orig_w2), mode='bilinear', align_corners=False)
                 reconstructions.append(recon2)
             except Exception as e:
                 logging.warning(f"Endpoint 2 decode failed: {e}")
@@ -347,30 +359,15 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
     if len(reconstructions) == 0:
         return None
 
-    # Reconstructions may have variable HxW. To return a single tensor we place
-    # each frame centered on a canvas of size (max_h, max_w) and pad with zeros.
-    heights = [t.shape[2] for t in reconstructions]
-    widths = [t.shape[3] for t in reconstructions]
-    max_h = int(max(heights))
-    max_w = int(max(widths))
-
-    padded_frames = []
+    # Return frames as a list of native-size tensors (C, H, W) without extra padding
+    frames = []
     for t in reconstructions:
-        # t: (1, C, H, W) or (B, C, H, W) with B==1
+        # Ensure shape (1, C, H, W)
         if t.dim() == 3:
             t = t.unsqueeze(0)
-        _, C, h, w = t.shape
+        # squeeze batch dim -> (C, H, W)
+        frames.append(t[0].cpu())
 
-        pad_left = (max_w - w) // 2
-        pad_right = max_w - w - pad_left
-        pad_top = (max_h - h) // 2
-        pad_bottom = max_h - h - pad_top
-
-        t_padded = F.pad(t, (pad_left, pad_right, pad_top, pad_bottom))
-        padded_frames.append(t_padded)
-
-    # Stack and move to CPU
-    frames = torch.cat(padded_frames, dim=0).cpu()
     return frames
 
 
@@ -531,15 +528,66 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             )
             
             if interp_frames is not None:
-                # Save each frame separately - navigate between them via TensorBoard
-                frames_normalized = (interp_frames - interp_frames.min()) / (interp_frames.max() - interp_frames.min() + 1e-8)
-                for frame_idx, frame in enumerate(frames_normalized):
-                    writer.add_image(
-                        f"interpolations/{archetype_names[idx1]}_to_{archetype_names[idx2]}", 
-                        frame, 
-                        global_step=epoch * 1000 + frame_idx  # epoch*1000 groups frames by epoch
-                    )
-                logging.info(f"✅ Interpolation ({frames_normalized.shape[0]} frames) saved: {archetype_names[idx1]} → {archetype_names[idx2]}")
+                # interp_frames is a list of tensors (C,H,W) with variable sizes.
+                tag = f"interpolations/{archetype_names[idx1]}_to_{archetype_names[idx2]}"
+
+                # 0) Log preprocessed original archetype images (cropped to original size) as step 0 and final step
+                def _crop_original(ar_img_tuple):
+                    # ar_img_tuple: (padded_cpu, mask_cpu, orig_h, orig_w)
+                    padded_cpu, mask_cpu, oh, ow = ar_img_tuple
+                    # padded_cpu shape: (1, C, H, W)
+                    img = padded_cpu[0, :, :int(oh), :int(ow)].clone()
+                    return img
+
+                # If archetype images are tuples (padded, mask, orig_h, orig_w) we crop, else use as-is
+                if isinstance(img1, tuple):
+                    start_img = _crop_original(img1)
+                elif img1 is not None:
+                    start_img = img1[0].cpu() if img1.dim() == 4 else img1.cpu()
+                else:
+                    start_img = None
+
+                if isinstance(img2, tuple):
+                    end_img = _crop_original(img2)
+                elif img2 is not None:
+                    end_img = img2[0].cpu() if img2.dim() == 4 else img2.cpu()
+                else:
+                    end_img = None
+
+                step_base = epoch * 1000
+                current_step = step_base
+                
+                # 1) Log preprocessed archetype 1
+                if start_img is not None:
+                    start_norm = (start_img - start_img.min()) / (start_img.max() - start_img.min() + 1e-8)
+                    writer.add_image(f"{tag}/00_preprocessed_1", start_norm, global_step=epoch)
+                    logging.info(f"  [00] Archetype 1 preprocessed (shape={start_img.shape})")
+                else:
+                    logging.warning(f"  start_img is None, skipping archetype 1 preprocessed")
+
+                # 2) Log each interpolated frame (includes recon1, interpolations, recon2)
+                for frame_idx, frame in enumerate(interp_frames):
+                    # frame is (C,H,W)
+                    fnorm = (frame - frame.min()) / (frame.max() - frame.min() + 1e-8)
+                    # Use subtags with frame number for better organization
+                    if frame_idx == 0:
+                        subtag = f"{tag}/01_recon_1"
+                    elif frame_idx == len(interp_frames) - 1:
+                        subtag = f"{tag}/{99:02d}_recon_2"
+                    else:
+                        subtag = f"{tag}/{frame_idx+1:02d}_interp"
+                    writer.add_image(subtag, fnorm, global_step=epoch)
+                    logging.info(f"  [{frame_idx+1:02d}] Frame shape={tuple(frame.shape)}")
+
+                # 3) Log preprocessed archetype 2
+                if end_img is not None:
+                    end_norm = (end_img - end_img.min()) / (end_img.max() - end_img.min() + 1e-8)
+                    writer.add_image(f"{tag}/99_preprocessed_2", end_norm, global_step=epoch)
+                    logging.info(f"  [99] Archetype 2 preprocessed (shape={end_img.shape})")
+                else:
+                    logging.warning(f"  end_img is None, skipping archetype 2 preprocessed")
+
+                logging.info(f"✅ Interpolation sequence ({len(interp_frames)} frames + 2 preprocessed) saved: {archetype_names[idx1]} → {archetype_names[idx2]}")
         except Exception as e:
             logging.warning(f"Interpolation failed: {e}")
     
