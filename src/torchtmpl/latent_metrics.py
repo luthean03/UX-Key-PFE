@@ -281,11 +281,19 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
                         recon1, _, _ = model(img_t.to(device), mask=mask_t.to(device))
                         # Crop reconstruction to original size (remove padding)
                         recon1 = recon1[:, :, :orig_h1, :orig_w1]
+                        # Crop reconstruction to original size (remove padding)
+                        recon1 = recon1[:, :, :orig_h1, :orig_w1]
                     else:
                         recon1, _, _ = model(archetype_img1.to(device))
                 else:
                     # Fallback: decode depuis latent with original size
+                    # Fallback: decode depuis latent with original size
                     z1_torch = torch.from_numpy(latent1).unsqueeze(0).float().to(device)
+                    try:
+                        recon1 = model.decode(z1_torch, output_size=(orig_h1, orig_w1))
+                    except TypeError:
+                        recon1 = model.decode(z1_torch)
+                        recon1 = F.interpolate(recon1, size=(orig_h1, orig_w1), mode='bilinear', align_corners=False)
                     try:
                         recon1 = model.decode(z1_torch, output_size=(orig_h1, orig_w1))
                     except TypeError:
@@ -341,11 +349,19 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
                         recon2, _, _ = model(img_t.to(device), mask=mask_t.to(device))
                         # Crop reconstruction to original size (remove padding)
                         recon2 = recon2[:, :, :orig_h2, :orig_w2]
+                        # Crop reconstruction to original size (remove padding)
+                        recon2 = recon2[:, :, :orig_h2, :orig_w2]
                     else:
                         recon2, _, _ = model(archetype_img2.to(device))
                 else:
                     # Fallback: decode depuis latent with original size
+                    # Fallback: decode depuis latent with original size
                     z2_torch = torch.from_numpy(latent2).unsqueeze(0).float().to(device)
+                    try:
+                        recon2 = model.decode(z2_torch, output_size=(orig_h2, orig_w2))
+                    except TypeError:
+                        recon2 = model.decode(z2_torch)
+                        recon2 = F.interpolate(recon2, size=(orig_h2, orig_w2), mode='bilinear', align_corners=False)
                     try:
                         recon2 = model.decode(z2_torch, output_size=(orig_h2, orig_w2))
                     except TypeError:
@@ -361,10 +377,16 @@ def generate_interpolation_video(model, latent1, latent2, archetype_img1, archet
 
     # Return frames as a list of native-size tensors (C, H, W) without extra padding
     frames = []
+    # Return frames as a list of native-size tensors (C, H, W) without extra padding
+    frames = []
     for t in reconstructions:
+        # Ensure shape (1, C, H, W)
         # Ensure shape (1, C, H, W)
         if t.dim() == 3:
             t = t.unsqueeze(0)
+        # squeeze batch dim -> (C, H, W)
+        frames.append(t[0].cpu())
+
         # squeeze batch dim -> (C, H, W)
         frames.append(t[0].cpu())
 
