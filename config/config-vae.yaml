@@ -67,7 +67,7 @@ optim:
   scheduler:
     name: "CosineAnnealingWarmRestarts"
     params:
-      T_0: 100                   # Redémarre tous les 100 epochs
+      T_0: 10                   # Redémarre tous les 100 epochs
       T_mult: 2                  # Double la période après chaque restart
       eta_min: 0.000003          # LR minimum (plancher)
       verbose: true
@@ -102,7 +102,7 @@ logging:
   #   entity: "your-team"
 
 # ==================== TRAINING ====================
-nepochs: 1000
+nepochs: 100
 
 # ==================== EARLY STOPPING ====================
 early_stopping:
