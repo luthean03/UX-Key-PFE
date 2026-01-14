@@ -7,8 +7,8 @@
 resume: null 
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled"
-  archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
+  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/vae_dataset_scaled"
+  archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
   batch_size: 16                    # Requis pour tailles variables
   num_workers: 8                 # Parallélisation I/O
   valid_ratio: 0.2               # 80/20 train/valid split
@@ -95,8 +95,6 @@ logging:
   latent_visualization:
     frequency: 20                # t-SNE tous les 20 epochs
     max_samples: 500
-    interpolation_method: "slerp"  # NOUVEAU: Méthode d'interpolation (slerp/lerp)
-    num_interpolation_steps: 10    # NOUVEAU: Nombre de frames d'interpolation
   # wandb:
   #   project: "ux-vae-improved"
   #   entity: "your-team"
@@ -118,3 +116,12 @@ test:
   test_input_dir: "./test/test_input"          # Dossier contenant les images à tester
   test_output_dir: "./test/test_output"        # Dossier pour enregistrer les résultats (grilles de comparaison)
   model_path: "logs/VAE_18/best_model.pt" # Chemin vers le checkpoint du modèle entraîné
+# ==================== INTERPOLATION ====================
+# Interpolate between two images in latent space
+# Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml interpolate
+interpolate:
+  image1_path: "./test/test_input/wireframe_2925855_linear.png"  # Chemin à l'image 1
+  image2_path: "./test/test_input/wireframe_3024123_linear.png"  # Chemin à l'image 2
+  output_dir: "./test/interpolate_output"            # Dossier pour enregistrer la grille d'interpolation
+  num_steps: 10                                 # Nombre de frames d'interpolation entre les deux images
+  model_path: "logs/VAE_18/best_model.pt"       # Checkpoint du modèle entraîné

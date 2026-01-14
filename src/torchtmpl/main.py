@@ -815,11 +815,245 @@ def test(config):
     logging.info(f"Test completed. Results saved to {test_output_dir}")
 
 
+def slerp(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
+    """Spherical Linear Interpolation between two latent vectors.
+    
+    Args:
+        z1: First latent code (latent_dim,)
+        z2: Second latent code (latent_dim,)
+        alpha: Interpolation factor in [0, 1]
+    
+    Returns:
+        Interpolated latent code
+    """
+    # Normalize to unit vectors
+    z1_norm = z1 / (np.linalg.norm(z1) + 1e-8)
+    z2_norm = z2 / (np.linalg.norm(z2) + 1e-8)
+    
+    # Compute angle between vectors
+    dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
+    omega = np.arccos(dot)
+    sin_omega = np.sin(omega)
+    
+    # Handle nearly parallel vectors (use linear interpolation)
+    if np.abs(sin_omega) < 1e-6:
+        return (1 - alpha) * z1 + alpha * z2
+    
+    # SLERP formula
+    return (np.sin((1 - alpha) * omega) / sin_omega) * z1 + (np.sin(alpha * omega) / sin_omega) * z2
+
+
+def interpolate(config):
+    """Interpolate between two images in latent space.
+    
+    Creates a horizontal grid: [orig1] [recon1] [interp_1] ... [interp_n] [recon2] [orig2]
+    
+    Expected config structure:
+    {
+        'interpolate': {
+            'image1_path': '/path/to/image1.png',
+            'image2_path': '/path/to/image2.png',
+            'output_dir': '/path/to/output',
+            'num_steps': 10,
+            'model_path': '/path/to/checkpoint.pt'
+        },
+        'model': {...}
+    }
+    """
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda") if use_cuda else torch.device("cpu")
+    logging.info(f"Using device: {device}")
+    
+    # Get interpolate config
+    interp_config = config.get("interpolate", {})
+    image1_path = interp_config.get("image1_path")
+    image2_path = interp_config.get("image2_path")
+    output_dir = interp_config.get("output_dir", "interpolate_output")
+    num_steps = int(interp_config.get("num_steps", 10))
+    model_path = interp_config.get("model_path")
+    
+    if not image1_path or not image2_path:
+        raise ValueError("image1_path and image2_path must be specified in config['interpolate']")
+    
+    if not model_path:
+        raise ValueError("model_path must be specified in config['interpolate']")
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    logging.info(f"Output directory: {output_dir}")
+    
+    # Load model
+    logging.info("= Loading Model")
+    model_config = config["model"]
+    input_size = (1, 128, 1024)
+    num_classes = 0
+    model = models.build_model(model_config, input_size, num_classes)
+    model.to(device)
+    
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+    
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint)
+    logging.info(f"Loaded model from: {model_path}")
+    model.eval()
+    
+    # Load and process both images
+    images_pil = []
+    latents = []
+    orig_dims = []
+    
+    image_paths = [image1_path, image2_path]
+    
+    with torch.no_grad():
+        for img_idx, img_path in enumerate(image_paths):
+            if not os.path.exists(img_path):
+                raise FileNotFoundError(f"Image not found: {img_path}")
+            
+            logging.info(f"Loading image {img_idx + 1}: {img_path}")
+            
+            # Load image
+            img = Image.open(img_path).convert('L')
+            w, h = img.size
+            orig_dims.append((h, w))
+            
+            # Convert to tensor
+            img_tensor = TF.to_tensor(img).unsqueeze(0)  # (1, 1, H, W)
+            
+            # Pad to multiple of 32
+            stride = 32
+            pad_h = ((h + stride - 1) // stride) * stride
+            pad_w = ((w + stride - 1) // stride) * stride
+            
+            padded_img = torch.zeros(1, 1, pad_h, pad_w)
+            mask = torch.zeros(1, 1, pad_h, pad_w)
+            padded_img[0, :, :h, :w] = img_tensor[0]
+            mask[0, 0, :h, :w] = 1.0
+            
+            # Encode
+            padded_img = padded_img.to(device)
+            mask = mask.to(device)
+            
+            _, mu, _ = model(padded_img, mask=mask)
+            
+            # Store latent and original image
+            latents.append(mu[0].cpu().numpy())  # (latent_dim,)
+            images_pil.append(img)
+    
+    z1, z2 = latents[0], latents[1]
+    orig1_pil, orig2_pil = images_pil[0], images_pil[1]
+    orig_h1, orig_w1 = orig_dims[0]
+    orig_h2, orig_w2 = orig_dims[1]
+    
+    logging.info(f"Image 1 size: {orig_w1}x{orig_h1}, Image 2 size: {orig_w2}x{orig_h2}")
+    logging.info(f"Latent shapes: z1={z1.shape}, z2={z2.shape}")
+    
+    # Build interpolation frames with geometric interpolation
+    interp_frames = []
+    
+    with torch.no_grad():
+        # 1. Original image 1
+        interp_frames.append(orig1_pil)
+        
+        # 2. Reconstruction of image 1 (using full forward pass like test())
+        img_tensor_1 = TF.to_tensor(orig1_pil).unsqueeze(0)
+        stride = 32
+        pad_h = ((orig_h1 + stride - 1) // stride) * stride
+        pad_w = ((orig_w1 + stride - 1) // stride) * stride
+        
+        padded_img_1 = torch.zeros(1, 1, pad_h, pad_w)
+        mask_1 = torch.zeros(1, 1, pad_h, pad_w)
+        padded_img_1[0, :, :orig_h1, :orig_w1] = img_tensor_1[0]
+        mask_1[0, 0, :orig_h1, :orig_w1] = 1.0
+        
+        recon1, _, _ = model(padded_img_1.to(device), mask=mask_1.to(device))
+        recon1 = recon1[0, 0, :orig_h1, :orig_w1].cpu()
+        recon1_np = (recon1.numpy() * 255).astype(np.uint8)
+        recon1_pil = Image.fromarray(recon1_np, mode='L')
+        interp_frames.append(recon1_pil)
+        
+        # 3. Interpolation steps with geometric interpolation
+        logging.info(f"Generating {num_steps} interpolation steps with SLERP in latent space...")
+        for step in range(num_steps):
+            alpha = step / (num_steps - 1) if num_steps > 1 else 0.5
+            
+            # SLERP in latent space (creates new points between z1 and z2)
+            z_interp = slerp(z1, z2, alpha)
+            
+            # Log to verify we're using different latent points
+            if step == 0 or step == num_steps - 1:
+                dist_to_z1 = np.linalg.norm(z_interp - z1)
+                dist_to_z2 = np.linalg.norm(z_interp - z2)
+                logging.info(f"  Step {step} (alpha={alpha:.2f}): dist to z1={dist_to_z1:.4f}, dist to z2={dist_to_z2:.4f}")
+            
+            # Geometric interpolation of dimensions
+            h_interp = int((1 - alpha) * orig_h1 + alpha * orig_h2)
+            w_interp = int((1 - alpha) * orig_w1 + alpha * orig_w2)
+            
+            # Decode interpolated latent
+            z_interp_torch = torch.from_numpy(z_interp).float().unsqueeze(0).to(device)
+            recon = model.decode(z_interp_torch)[0, 0].cpu()
+            recon_np = (recon.numpy() * 255).astype(np.uint8)
+            recon_pil = Image.fromarray(recon_np, mode='L')
+            
+            # Resize to interpolated dimensions
+            recon_pil = recon_pil.resize((w_interp, h_interp), Image.Resampling.LANCZOS)
+            interp_frames.append(recon_pil)
+        
+        # 4. Reconstruction of image 2 (using full forward pass like test())
+        img_tensor_2 = TF.to_tensor(orig2_pil).unsqueeze(0)
+        pad_h = ((orig_h2 + stride - 1) // stride) * stride
+        pad_w = ((orig_w2 + stride - 1) // stride) * stride
+        
+        padded_img_2 = torch.zeros(1, 1, pad_h, pad_w)
+        mask_2 = torch.zeros(1, 1, pad_h, pad_w)
+        padded_img_2[0, :, :orig_h2, :orig_w2] = img_tensor_2[0]
+        mask_2[0, 0, :orig_h2, :orig_w2] = 1.0
+        
+        recon2, _, _ = model(padded_img_2.to(device), mask=mask_2.to(device))
+        recon2 = recon2[0, 0, :orig_h2, :orig_w2].cpu()
+        recon2_np = (recon2.numpy() * 255).astype(np.uint8)
+        recon2_pil = Image.fromarray(recon2_np, mode='L')
+        interp_frames.append(recon2_pil)
+        
+        # 5. Original image 2
+        interp_frames.append(orig2_pil)
+    
+    logging.info(f"Created {len(interp_frames)} frames for grid")
+    
+    # Create horizontal grid with 10px gap between images (keep original sizes)
+    gap = 10
+    
+    # Calculate grid dimensions (max height, sum of widths)
+    grid_height = max([f.height for f in interp_frames])
+    total_width = sum(f.width for f in interp_frames) + gap * (len(interp_frames) - 1)
+    
+    logging.info(f"Grid dimensions: {total_width} x {grid_height}")
+    
+    # Create and populate grid
+    grid_img = Image.new('L', (total_width, grid_height), color=255)
+    
+    x_offset = 0
+    for frame in interp_frames:
+        # Center vertically if frame is shorter than grid height
+        y_offset = (grid_height - frame.height) // 2
+        grid_img.paste(frame, (x_offset, y_offset))
+        x_offset += frame.width + gap
+    
+    # Save grid
+    output_filename = "interpolation.png"
+    output_path = os.path.join(output_dir, output_filename)
+    grid_img.save(output_path)
+    
+    logging.info(f"Interpolation completed. Grid saved to: {output_path}")
+    logging.info(f"Grid size: {grid_img.size[0]} x {grid_img.size[1]} pixels")
+
+
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(message)s")
 
     if len(sys.argv) != 3:
-        logging.error(f"Usage : {sys.argv[0]} config.yaml <train|test>")
+        logging.error(f"Usage : {sys.argv[0]} config.yaml <train|test|interpolate>")
         sys.exit(-1)
 
     logging.info("Loading {}".format(sys.argv[1]))
