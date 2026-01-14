@@ -4,7 +4,7 @@
 
 # === RESUME TRAINING (Optionnel) ===
 # Chemin vers un checkpoint (.pt) pour reprendre l'entraînement
-resume: "logs/VAE_16/best_model.pt" 
+resume: "logs/VAE_17/last_model.pt" 
 
 data:
   data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled_1"
