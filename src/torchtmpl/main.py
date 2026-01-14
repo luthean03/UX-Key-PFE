@@ -20,6 +20,8 @@ import torchinfo.torchinfo as torchinfo
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from torchmetrics.image import StructuralSimilarityIndexMeasure
+from PIL import Image
+import torchvision.transforms.functional as TF
 
 # Optional visualization dependencies (imported lazily)
 import matplotlib.pyplot as plt
@@ -689,7 +691,128 @@ def train(config):
 
 
 def test(config):
-    raise NotImplementedError
+    """Test function: Encode/decode images and create comparison grids.
+    
+    Loads images from test_input_dir specified in config,
+    encodes/decodes them with the VAE, and saves side-by-side
+    comparison images (original + reconstruction) to test_output_dir.
+    
+    Expected config structure:
+    {
+        'test': {
+            'test_input_dir': '/path/to/input/images',
+            'test_output_dir': '/path/to/output/images',
+            'model_path': '/path/to/checkpoint.pt'
+        },
+        'model': {...},
+        'data': {...}
+    }
+    """
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda") if use_cuda else torch.device("cpu")
+    logging.info(f"Using device: {device}")
+    
+    # Get test config
+    test_config = config.get("test", {})
+    test_input_dir = test_config.get("test_input_dir", "test_input")
+    test_output_dir = test_config.get("test_output_dir", "test_output")
+    model_path = test_config.get("model_path")
+    
+    if not model_path:
+        raise ValueError("model_path must be specified in config['test']")
+    
+    # Create output directory
+    os.makedirs(test_output_dir, exist_ok=True)
+    logging.info(f"Output directory: {test_output_dir}")
+    
+    # Load model
+    logging.info("= Loading Model")
+    model_config = config["model"]
+    input_size = (1, 128, 1024)  # Default: (C, H, W) for single-channel wireframes
+    num_classes = 0
+    model = models.build_model(model_config, input_size, num_classes)
+    model.to(device)
+    
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+    
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint)
+    logging.info(f"Loaded model from: {model_path}")
+    model.eval()
+    
+    # Find all images in input directory
+    input_path = pathlib.Path(test_input_dir)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input directory not found: {test_input_dir}")
+    
+    # Find PNG files
+    image_files = sorted(list(input_path.glob("*.png"))) + sorted(list(input_path.glob("*.jpg")))
+    if len(image_files) == 0:
+        raise FileNotFoundError(f"No images found in {test_input_dir}")
+    
+    logging.info(f"Found {len(image_files)} images in {test_input_dir}")
+    
+    # Process each image
+    with torch.no_grad():
+        for idx, img_path in enumerate(tqdm(image_files, desc="Processing images")):
+            try:
+                # Load image
+                img = Image.open(img_path).convert('L')
+                w, h = img.size
+                
+                # Convert to tensor
+                img_tensor = TF.to_tensor(img).unsqueeze(0)  # (1, 1, H, W)
+                
+                # Pad to multiple of 32
+                stride = 32
+                pad_h = ((h + stride - 1) // stride) * stride
+                pad_w = ((w + stride - 1) // stride) * stride
+                
+                padded_img = torch.zeros(1, 1, pad_h, pad_w)
+                mask = torch.zeros(1, 1, pad_h, pad_w)
+                padded_img[0, :, :h, :w] = img_tensor[0]
+                mask[0, 0, :h, :w] = 1.0
+                
+                # Encode-decode
+                padded_img = padded_img.to(device)
+                mask = mask.to(device)
+                
+                recon, _, _ = model(padded_img, mask=mask)
+                
+                # Crop reconstruction to original size
+                recon = recon[0, 0, :h, :w].cpu()
+                
+                # Convert to PIL images
+                original_pil = TF.to_pil_image(img_tensor[0, 0, :h, :w])
+                recon_np = (recon.numpy() * 255).astype(np.uint8)
+                recon_pil = Image.fromarray(recon_np, mode='L')
+                
+                # Create side-by-side grid
+                # Both images should have same height
+                grid_width = original_pil.width + recon_pil.width + 20  # 20px gap
+                grid_height = max(original_pil.height, recon_pil.height)
+                
+                grid_img = Image.new('L', (grid_width, grid_height), color=255)
+                
+                # Paste original on the left
+                grid_img.paste(original_pil, (0, 0))
+                
+                # Paste reconstruction on the right (with 20px gap)
+                grid_img.paste(recon_pil, (original_pil.width + 20, 0))
+                
+                # Save the grid
+                output_filename = img_path.stem + "_comparison.png"
+                output_path = os.path.join(test_output_dir, output_filename)
+                grid_img.save(output_path)
+                
+                logging.info(f"Saved: {output_filename}")
+                
+            except Exception as e:
+                logging.error(f"Error processing {img_path.name}: {e}")
+                continue
+    
+    logging.info(f"Test completed. Results saved to {test_output_dir}")
 
 
 if __name__ == "__main__":

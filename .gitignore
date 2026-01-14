@@ -47,4 +47,5 @@ samir_lom/
 configs/
 job.sbatch
 job.sbatch.*
+test*
 vae_dataset*

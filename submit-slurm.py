@@ -184,6 +184,27 @@ if [[ "{command}" == "test" || "{command}" == "train_test" ]]; then
     if [[ $? != 0 ]]; then
         exit -1
     fi
+    
+    # === COPIE DES RÉSULTATS DU TEST EN RETOUR ===
+    # Récupérer le chemin de sortie du test depuis la config
+    TEST_OUTPUT_DIR=$(python3 -c "
+import yaml
+import pathlib
+cfg = yaml.safe_load(open('$job_config'))
+test_output = cfg.get('test', {{}}).get('test_output_dir', './test_output')
+print(test_output)
+")
+    
+    # Copier les résultats du test du nœud vers le dossier partagé
+    if [[ -d "$TEST_OUTPUT_DIR" ]]; then
+        echo "✅ Copying test results back to shared filesystem..."
+        # Créer le dossier de destination s'il n'existe pas
+        mkdir -p "$current_dir/$TEST_OUTPUT_DIR"
+        # Copier les fichiers PNG de comparaison
+        rsync -r "$TEST_OUTPUT_DIR/" "$current_dir/$TEST_OUTPUT_DIR/" 2>/dev/null || true
+        echo "✅ Test results copied to: $current_dir/$TEST_OUTPUT_DIR"
+        echo "   Found $(ls $current_dir/$TEST_OUTPUT_DIR/*.png 2>/dev/null | wc -l) comparison images"
+    fi
 fi
 
 echo "Done. Artifacts are written to the paths specified in the YAML (under $current_dir)."

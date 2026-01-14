@@ -4,10 +4,10 @@
 
 # === RESUME TRAINING (Optionnel) ===
 # Chemin vers un checkpoint (.pt) pour reprendre l'entraînement
-resume: "logs/VAE_17/last_model.pt" 
+resume: null 
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled_1"
+  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled"
   archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
   batch_size: 16                    # Requis pour tailles variables
   num_workers: 8                 # Parallélisation I/O
@@ -111,3 +111,10 @@ early_stopping:
   mode: "max"                    # max pour SSIM, min pour ELBO
   patience: 20                   # Arrête si pas d'amélioration 20 epochs
   min_delta: 0.0001              # Amélioration minimale considérée
+# ==================== TEST (Inference) ====================
+# Utilisé pour tester le modèle entraîné sur des images
+# Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml test
+test:
+  test_input_dir: "./test/test_input"          # Dossier contenant les images à tester
+  test_output_dir: "./test/test_output"        # Dossier pour enregistrer les résultats (grilles de comparaison)
+  model_path: "logs/VAE_18/best_model.pt" # Chemin vers le checkpoint du modèle entraîné
