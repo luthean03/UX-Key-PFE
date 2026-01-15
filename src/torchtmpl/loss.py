@@ -195,23 +195,47 @@ class SimpleVAELoss(nn.Module):
         self.beta = beta
 
     def forward(self, recon_x, x, mu, logvar, mask=None):
-        # Reconstruction Loss Masquée
+        # Force FP32 pour la précision
+        recon_x = recon_x.float()
+        x = x.float()
+        
+        B, C, H, W = x.shape
+        num_pixels = H * W
+        
+        # Reconstruction Loss Masquée (MEAN au lieu de SUM)
         if mask is not None:
+            mask = mask.float()
             if self.mode == 'mse':
                 diff = ((recon_x - x) ** 2) * mask
             else:  # l1
                 diff = torch.abs(recon_x - x) * mask
-            recon_loss = diff.sum()
+            # Moyenne sur les pixels non masqués
+            recon_loss = diff.sum() / (mask.sum() + 1e-8)
         elif self.mode == 'mse':
-            recon_loss = F.mse_loss(recon_x, x, reduction='sum')
+            recon_loss = F.mse_loss(recon_x, x, reduction='mean')
         elif self.mode == 'l1':
-            recon_loss = F.l1_loss(recon_x, x, reduction='sum')
+            recon_loss = F.l1_loss(recon_x, x, reduction='mean')
         else:
             raise ValueError(f"Unknown recon loss mode: {self.mode}")
 
+        # KLD normalisée par le nombre d'images (batch size)
+        mu = mu.float()
+        logvar = logvar.float()
         kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        total = recon_loss + (self.beta * kld_loss)
-        return total, recon_loss, kld_loss
+        kld_loss = kld_loss / B 
+        
+        # Pour rester "rigoureux" mathématiquement avec la reconstruction en mode MEAN
+        # tout en évitant le vanishing des gradients, on ré-applique le facteur HW
+        # sur l'ensemble de la loss. Cela revient à travailler avec des ordres de grandeur
+        # habituels (millions) mais avec une gestion propre des masques et de la KLD.
+        
+        # Le ratio rigoureux souhaité : recon_mean + (beta/num_pixels) * kld_per_image
+        # On multiplie tout par num_pixels pour la stabilité numérique (gradients plus forts)
+        total = (recon_loss * num_pixels) + (self.beta * kld_loss)
+        
+        # On retourne les valeurs "humainement lisibles" (normalisées) pour les logs
+        # mais la 'total' sera utilisée pour le backward.
+        return total, recon_loss, kld_loss / num_pixels
 
 
 # ===================== PERCEPTUAL VAE LOSS =====================

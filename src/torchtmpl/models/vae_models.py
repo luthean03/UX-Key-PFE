@@ -115,11 +115,15 @@ class CBAM(nn.Module):
 class ResidualBlock(nn.Module):
     def __init__(self, in_c, out_c, stride=1):
         super().__init__()
+        num_groups = min(32, out_c)
+        if out_c % num_groups != 0:
+            num_groups = out_c # Fallback to instance norm style if not divisible
+            
         self.conv1 = nn.Conv2d(in_c, out_c, 3, stride, 1, bias=False)
-        self.gn1 = MaskedGroupNorm(32, out_c) 
+        self.gn1 = MaskedGroupNorm(num_groups, out_c) 
         
         self.conv2 = nn.Conv2d(out_c, out_c, 3, 1, 1, bias=False)
-        self.gn2 = MaskedGroupNorm(32, out_c)
+        self.gn2 = MaskedGroupNorm(num_groups, out_c)
         
         self.cbam = CBAM(out_c) 
         
@@ -127,7 +131,7 @@ class ResidualBlock(nn.Module):
         self.use_projection = (stride != 1 or in_c != out_c)
         if self.use_projection:
             self.shortcut_conv = nn.Conv2d(in_c, out_c, 1, stride, bias=False)
-            self.shortcut_gn = MaskedGroupNorm(32, out_c)
+            self.shortcut_gn = MaskedGroupNorm(num_groups, out_c)
 
     def forward(self, x, mask=None):
         # Assurer que le masque d'entrée correspond à l'entrée x
@@ -229,8 +233,11 @@ class VAE(nn.Module):
         self.dec_block3 = ResidualBlock(64, 32)
         
         self.dec_up4 = nn.Upsample(scale_factor=2)
+        self.dec_block4 = ResidualBlock(32, 16)
+        
+        self.dec_up5 = nn.Upsample(scale_factor=2)
         self.dec_final = nn.Sequential(
-            nn.Conv2d(32, 1, 3, 1, 1),
+            nn.Conv2d(16, 1, 3, 1, 1),
             nn.Sigmoid(),
         )
 
@@ -284,7 +291,11 @@ class VAE(nn.Module):
         
         d = self.dec_up3(d)
         d = self.dec_block3(d)
+        
         d = self.dec_up4(d)
+        d = self.dec_block4(d)
+        
+        d = self.dec_up5(d)
         recon = self.dec_final(d)
         
         return recon
