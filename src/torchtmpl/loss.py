@@ -221,21 +221,15 @@ class SimpleVAELoss(nn.Module):
         # KLD normalisée par le nombre d'images (batch size)
         mu = mu.float()
         logvar = logvar.float()
-        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        kld_loss = kld_loss / B 
-        
-        # Pour rester "rigoureux" mathématiquement avec la reconstruction en mode MEAN
-        # tout en évitant le vanishing des gradients, on ré-applique le facteur HW
-        # sur l'ensemble de la loss. Cela revient à travailler avec des ordres de grandeur
-        # habituels (millions) mais avec une gestion propre des masques et de la KLD.
+        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) 
         
         # Le ratio rigoureux souhaité : recon_mean + (beta/num_pixels) * kld_per_image
         # On multiplie tout par num_pixels pour la stabilité numérique (gradients plus forts)
-        total = (recon_loss * num_pixels) + (self.beta * kld_loss)
+        total = (recon_loss) + (self.beta * kld_loss)
         
         # On retourne les valeurs "humainement lisibles" (normalisées) pour les logs
         # mais la 'total' sera utilisée pour le backward.
-        return total, recon_loss, kld_loss / num_pixels
+        return total, recon_loss, kld_loss
 
 
 # ===================== PERCEPTUAL VAE LOSS =====================
