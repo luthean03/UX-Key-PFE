@@ -1,6 +1,6 @@
 # src/torchtmpl/data.py
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from PIL import Image
 import os
 import torchvision.transforms.functional as TF
@@ -9,6 +9,73 @@ import random
 import logging
 
 Image.MAX_IMAGE_PIXELS = None 
+
+
+class SortedBatchSampler(Sampler):
+    """Batches sorted by image height to minimize padding overhead.
+    
+    Groups similar-sized images together to reduce wasted GPU memory from padding.
+    Without this: batch with 1 large image pads all 15 others to its size.
+    With this: large images batch together, small images batch together.
+    
+    Example: batch_size=16
+    - Without sorting: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 2048]
+      → all padded to 2048 (huge waste)
+    - With sorting: [1024, 1024, ..., 1024, 2048, 2048, ..., 2048]
+      → each batch gets similar sizes (minimal padding)
+    """
+    
+    def __init__(self, dataset, batch_size: int, drop_last: bool = False, shuffle: bool = True):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.shuffle = shuffle
+        
+        # Get image heights for all samples
+        self.heights = []
+        for i in range(len(dataset)):
+            try:
+                # Load image to get dimensions
+                img_path = os.path.join(dataset.root_dir, dataset.files[i])
+                img = Image.open(img_path).convert('L')
+                h, w = img.size[1], img.size[0]
+                # Apply max_height crop if needed
+                if h > dataset.max_height:
+                    h = dataset.max_height
+                self.heights.append((h, i))
+            except Exception as e:
+                logging.warning(f"Failed to load dimensions for {dataset.files[i]}: {e}")
+                self.heights.append((0, i))
+        
+        # Sort by height
+        self.heights.sort()
+    
+    def __iter__(self):
+        # Get indices in sorted order
+        indices = [idx for _, idx in self.heights]
+        
+        if self.shuffle:
+            # Shuffle within buckets to add randomness while keeping similar sizes together
+            buckets = [indices[i:i+self.batch_size] for i in range(0, len(indices), self.batch_size)]
+            for bucket in buckets:
+                random.shuffle(bucket)
+            indices = [idx for bucket in buckets for idx in bucket]
+        
+        # Create batches
+        batches = [indices[i:i+self.batch_size] for i in range(0, len(indices), self.batch_size)]
+        
+        if self.drop_last and len(batches[-1]) < self.batch_size:
+            batches = batches[:-1]
+        
+        for batch in batches:
+            yield batch
+    
+    def __len__(self):
+        if self.drop_last:
+            return len(self.heights) // self.batch_size
+        else:
+            return (len(self.heights) + self.batch_size - 1) // self.batch_size
+
 
 class VariableSizeDataset(Dataset):
     def __init__(self, root_dir, noise_level=0.0, max_height=2048, augment=False, files_list=None, 
@@ -229,10 +296,25 @@ def get_dataloaders(data_config, use_cuda):
     g = torch.Generator()
     g.manual_seed(seed)
 
-    train_loader = DataLoader(
+    # Use SortedBatchSampler for training to minimize padding overhead
+    train_sampler = SortedBatchSampler(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        drop_last=False,
+        shuffle=True  # Shuffle within size buckets
+    )
+    
+    # Validation can use regular shuffling (smaller dataset)
+    valid_sampler = SortedBatchSampler(
+        valid_dataset,
+        batch_size=batch_size,
+        drop_last=False,
+        shuffle=False
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=use_cuda,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
@@ -241,8 +323,7 @@ def get_dataloaders(data_config, use_cuda):
     )
     valid_loader = DataLoader(
         valid_dataset,
-        batch_size=batch_size,
-        shuffle=False,
+        batch_sampler=valid_sampler,
         num_workers=num_workers,
         pin_memory=use_cuda,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
