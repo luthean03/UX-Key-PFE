@@ -269,10 +269,7 @@ class VAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
-        """Decode from latent code, compatible with skip connections.
-        
-        When skip connections are enabled, creates zero tensors as dummy skips.
-        This ensures interpolation works correctly.
+        """Decode from latent code.
         
         Args:
             z: (batch, latent_dim) latent codes
@@ -358,13 +355,14 @@ class VAE(nn.Module):
         return recon, mu, logvar
     
     def sample(self, num_samples: int = 1, device: torch.device = None, 
-               output_size: tuple = (1024, 128)) -> torch.Tensor:
+               output_size: tuple = (2048, 1024)) -> torch.Tensor:
         """Generate new wireframes by sampling from N(0, I).
         
         Args:
             num_samples: Number of wireframes to generate
             device: Device to generate on (defaults to model's device)
-            output_size: (height, width) of generated images
+            output_size: (height, width) of generated images. 
+                         Defaults to (2048, 1024) for vertical phone layouts.
             
         Returns:
             samples: (num_samples, 1, H, W) generated wireframe images
