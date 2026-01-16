@@ -1,7 +1,7 @@
 # src/torchtmpl/data.py
 import torch
 from torch.utils.data import Dataset, DataLoader, Sampler
-from PIL import Image
+from PIL import Image, ImageOps
 import os
 import torchvision.transforms.functional as TF
 import torchvision.transforms as T
@@ -133,7 +133,14 @@ class VariableSizeDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = os.path.join(self.root_dir, self.files[idx])
-        clean_image = Image.open(img_path).convert('L')
+        
+        # === EXIF ROTATION HANDLING ===
+        # Phones often store vertical photos with orientation metadata but no actual rotation.
+        # PIL loads the raw image data without applying EXIF rotation by default.
+        # This causes vertical images (e.g., 1000x3000) to be loaded as landscape (3000x1000).
+        img_pil = Image.open(img_path)
+        img_pil = ImageOps.exif_transpose(img_pil)  # Apply EXIF rotation if present
+        clean_image = img_pil.convert('L')
         
         # === CROP pour éviter le OOM ===
         w, h = clean_image.size
