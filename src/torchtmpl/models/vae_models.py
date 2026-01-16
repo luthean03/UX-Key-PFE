@@ -8,9 +8,6 @@ This model is designed for UI/UX wireframe learning with focus on:
 Uses Spatial Pyramid Pooling for fixed-size latent regardless of input height,
 and GroupNorm to work with batch_size=1.
 """
-from __future__ import annotations
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,7 +23,7 @@ class MaskedGroupNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(1, num_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
 
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(self, x, mask):
         # Si pas de masque, comportement standard
         if mask is None:
             # F.group_norm attend un poids de taille (C,), pas (1, C, 1, 1)
@@ -44,10 +41,9 @@ class MaskedGroupNorm(nn.Module):
         mask_sum = mask_g.expand_as(x_g).sum(dim=[2, 3, 4], keepdim=True)
         mean = x_sum / (mask_sum + self.eps)
 
-        # Variance pondérée avec estimateur SANS BIAIS (N-1 au lieu de N)
-        # Évite la sous-estimation de variance sur les petits masques
+        # Variance pondérée
         var_sum = ((x_g - mean).pow(2) * mask_g).sum(dim=[2, 3, 4], keepdim=True)
-        var = var_sum / torch.clamp(mask_sum - 1, min=1.0)  # Bessel's correction
+        var = var_sum / (mask_sum + self.eps)
 
         # Normalisation + Affine
         x_norm = (x_g - mean) / torch.sqrt(var + self.eps)
@@ -61,7 +57,7 @@ class MaskedSPPLayer(nn.Module):
         super().__init__()
         self.pool_sizes = pool_sizes
 
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x, mask=None):
         batch_size = x.size(0)
         features = []
         
@@ -137,7 +133,7 @@ class ResidualBlock(nn.Module):
             self.shortcut_conv = nn.Conv2d(in_c, out_c, 1, stride, bias=False)
             self.shortcut_gn = MaskedGroupNorm(num_groups, out_c)
 
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x, mask=None):
         # Assurer que le masque d'entrée correspond à l'entrée x
         if mask is not None and mask.shape[2:] != x.shape[2:]:
             mask = F.interpolate(mask, size=x.shape[2:], mode='nearest')
@@ -172,8 +168,11 @@ class VAE(nn.Module):
         self.latent_dim = config.get("latent_dim", 128)
         self.spp_levels = [1, 2, 4]
         
-        # Dropout configurable pour régularisation
+        # AMÉLIORATION: Dropout configurable pour régularisation
         self.dropout_p = config.get("dropout_p", 0.0)
+        
+        # AMÉLIORATION: Skip Connections U-Net style
+        self.use_skip_connections = config.get("use_skip_connections", False)
 
         # Encoder avec stockage des features intermédiaires
         self.enc_conv1 = nn.Sequential(
@@ -200,11 +199,9 @@ class VAE(nn.Module):
         self.fc_mu = nn.Linear(self.spp_out_dim, self.latent_dim)
         self.fc_logvar = nn.Linear(self.spp_out_dim, self.latent_dim)
 
-        # === DECODER ASPECT RATIO CORRECTION ===
-        # Previous: 64x4 (Ratio 16:1) → Too narrow, caused horizontal squashing/artifacts
-        # Current: 32x16 (Ratio 2:1) → Perfect for mobile screens (e.g., 19.5:9, typical 1024x512)
-        # This matches wireframe proportions and allows better information flow through bottleneck
-        self.dec_h, self.dec_w = 32, 16
+        # Make decoder base more elongated to better match tall web pages
+        # (increase vertical resolution to reduce upsample distortion)
+        self.dec_h, self.dec_w = 64, 4
         self.dec_channels = 256
         self.fc_decode = nn.Linear(self.latent_dim, self.dec_channels * self.dec_h * self.dec_w)
 
@@ -215,63 +212,42 @@ class VAE(nn.Module):
             self.dec_dropout1 = nn.Dropout2d(self.dropout_p)
         
         self.dec_up1 = nn.Upsample(scale_factor=2)
-        self.dec_block1 = ResidualBlock(256, 128)
+        
+        # Ajustement des canaux pour skip connections
+        if self.use_skip_connections:
+            self.dec_block1 = ResidualBlock(256 + 256, 128)  # Concat skip de enc_block2
+        else:
+            self.dec_block1 = ResidualBlock(256, 128)
         
         if self.dropout_p > 0:
             self.dec_dropout2 = nn.Dropout2d(self.dropout_p)
         
         self.dec_up2 = nn.Upsample(scale_factor=2)
-        self.dec_block2 = ResidualBlock(128, 64)
+        
+        if self.use_skip_connections:
+            self.dec_block2 = ResidualBlock(128 + 128, 64)  # Concat skip de enc_block1
+        else:
+            self.dec_block2 = ResidualBlock(128, 64)
         
         self.dec_up3 = nn.Upsample(scale_factor=2)
         self.dec_block3 = ResidualBlock(64, 32)
         
         self.dec_up4 = nn.Upsample(scale_factor=2)
-        self.dec_block4 = ResidualBlock(32, 16)
-        
-        self.dec_up5 = nn.Upsample(scale_factor=2)
         self.dec_final = nn.Sequential(
-            nn.Conv2d(16, 1, 3, 1, 1),
+            nn.Conv2d(32, 1, 3, 1, 1),
             nn.Sigmoid(),
         )
-        
-        # === INITIALISATION DES POIDS (Kaiming He pour ReLU) ===
-        self._init_weights()
 
-    def _init_weights(self) -> None:
-        """Initialize weights using Kaiming He initialization for ReLU networks.
-        
-        - Conv2d: Kaiming normal (fan_out, relu)
-        - Linear: Kaiming normal (fan_in, relu) 
-        - GroupNorm: weight=1, bias=0 (default)
-        - fc_logvar: zeros (start with low variance for stable training)
-        """
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, (nn.GroupNorm, nn.BatchNorm2d)):
-                if m.weight is not None:
-                    nn.init.ones_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-        
-        # Special init for fc_logvar: start with small variance for stable VAE training
-        nn.init.zeros_(self.fc_logvar.weight)
-        nn.init.constant_(self.fc_logvar.bias, -2.0)  # exp(-2) ≈ 0.14 initial std
-
-    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def decode(self, z: torch.Tensor) -> torch.Tensor:
-        """Decode from latent code.
+    def decode(self, z):
+        """Decode from latent code, compatible with skip connections.
+        
+        When skip connections are enabled, creates zero tensors as dummy skips.
+        This ensures interpolation works correctly.
         
         Args:
             z: (batch, latent_dim) latent codes
@@ -286,21 +262,33 @@ class VAE(nn.Module):
             d = self.dec_dropout1(d)
         
         d = self.dec_up1(d)  # (batch, 256, 128, 8)
+        
+        # Si skip connections activées, créer dummy skip de zéros
+        if self.use_skip_connections:
+            # Dummy skip de 256 canaux (de enc_block2)
+            dummy_skip1 = torch.zeros(d.shape[0], 256, d.shape[2], d.shape[3], 
+                                     device=d.device, dtype=d.dtype)
+            d = torch.cat([d, dummy_skip1], dim=1)  # (batch, 512, 128, 8)
+        
         d = self.dec_block1(d)
         
         if self.dropout_p > 0:
             d = self.dec_dropout2(d)
         
         d = self.dec_up2(d)  # (batch, 128, 256, 16)
+        
+        # Si skip connections activées, créer dummy skip de zéros
+        if self.use_skip_connections:
+            # Dummy skip de 128 canaux (de enc_block1)
+            dummy_skip2 = torch.zeros(d.shape[0], 128, d.shape[2], d.shape[3],
+                                     device=d.device, dtype=d.dtype)
+            d = torch.cat([d, dummy_skip2], dim=1)  # (batch, 256, 256, 16)
+        
         d = self.dec_block2(d)
         
         d = self.dec_up3(d)
         d = self.dec_block3(d)
-        
         d = self.dec_up4(d)
-        d = self.dec_block4(d)
-        
-        d = self.dec_up5(d)
         recon = self.dec_final(d)
         
         return recon
@@ -333,7 +321,10 @@ class VAE(nn.Module):
              m3 = F.interpolate(mask, size=e3.shape[2:], mode='nearest')
         else: m3 = None
 
-        features = self.enc_block3(e3, mask=m3)
+        if self.use_skip_connections:
+            features = self.enc_block3(e3, mask=m3)
+        else:
+            features = self.enc_block3(e3, mask=m3)
         
         if mask is not None:
             m_feat = F.interpolate(mask, size=features.shape[2:], mode='nearest')
@@ -357,14 +348,13 @@ class VAE(nn.Module):
         return recon, mu, logvar
     
     def sample(self, num_samples: int = 1, device: torch.device = None, 
-               output_size: tuple = (2048, 1024)) -> torch.Tensor:
+               output_size: tuple = (1024, 128)) -> torch.Tensor:
         """Generate new wireframes by sampling from N(0, I).
         
         Args:
             num_samples: Number of wireframes to generate
             device: Device to generate on (defaults to model's device)
-            output_size: (height, width) of generated images. 
-                         Defaults to (2048, 1024) for vertical phone layouts.
+            output_size: (height, width) of generated images
             
         Returns:
             samples: (num_samples, 1, H, W) generated wireframe images
@@ -439,7 +429,8 @@ class VAE(nn.Module):
     def slerp(z1: torch.Tensor, z2: torch.Tensor, alpha: float) -> torch.Tensor:
         """Spherical Linear Interpolation (SLERP) between two latent codes.
         
-        Delegates to centralized implementation in utils.py.
+        SLERP preserves the norm of latent vectors, providing smoother
+        interpolations than linear interpolation, especially for generation.
         
         Args:
             z1: (latent_dim,) or (B, latent_dim) first latent code
@@ -449,8 +440,31 @@ class VAE(nn.Module):
         Returns:
             z_interp: interpolated latent code
         """
-        from ..utils import slerp_torch
-        return slerp_torch(z1, z2, alpha)
+        # Normalize to unit vectors
+        z1_norm = z1 / (z1.norm(dim=-1, keepdim=True) + 1e-8)
+        z2_norm = z2 / (z2.norm(dim=-1, keepdim=True) + 1e-8)
+        
+        # Compute angle between vectors
+        dot = (z1_norm * z2_norm).sum(dim=-1, keepdim=True)
+        dot = torch.clamp(dot, -1.0 + 1e-6, 1.0 - 1e-6)  # Numerical stability
+        omega = torch.acos(dot)
+        
+        # SLERP formula
+        sin_omega = torch.sin(omega)
+        
+        # Handle nearly parallel vectors (use lerp instead)
+        if sin_omega.abs().min() < 1e-6:
+            return (1 - alpha) * z1 + alpha * z2
+        
+        # Scale back to original magnitudes (average of both)
+        scale1 = z1.norm(dim=-1, keepdim=True)
+        scale2 = z2.norm(dim=-1, keepdim=True)
+        scale = (1 - alpha) * scale1 + alpha * scale2
+        
+        z_interp = (torch.sin((1 - alpha) * omega) / sin_omega) * z1_norm + \
+                   (torch.sin(alpha * omega) / sin_omega) * z2_norm
+        
+        return z_interp * scale
     
     def interpolate(self, z1: torch.Tensor, z2: torch.Tensor, 
                     num_steps: int = 10, method: str = 'slerp',
@@ -480,7 +494,7 @@ class VAE(nn.Module):
         z2 = z2.to(device)
         
         self.eval()
-        with torch.inference_mode():
+        with torch.no_grad():
             for i in range(num_steps):
                 alpha = i / (num_steps - 1) if num_steps > 1 else 0.5
                 
