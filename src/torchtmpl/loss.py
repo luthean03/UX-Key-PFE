@@ -184,10 +184,18 @@ class MultiScaleLoss(nn.Module):
 class SimpleVAELoss(nn.Module):
     """Simple VAE loss using L1 or MSE reconstruction + KLD.
 
+    IMPORTANT pour un espace latent structuré (clustering + interpolation):
+    - recon_loss doit dominer légèrement pour une bonne reconstruction
+    - kld_loss régularise l'espace latent (proche de N(0,I))
+    - beta contrôle ce trade-off (beta < 1 = plus de reconstruction)
+
+    La KLD est normalisée PAR DIMENSION LATENTE pour être à la même échelle
+    que la reconstruction (typiquement ~0.01-0.1 pour des images [0,1]).
+
     Args:
         mode: 'l1' or 'mse'
-        beta: weight for KLD term
-        scale: global scaling factor for the total loss
+        beta: weight for KLD term (try 0.0001 to 0.01 for structured latent)
+        scale: global scaling factor for display (doesn't change ratios)
     """
 
     def __init__(self, mode='l1', beta=1.0, scale=1.0):
@@ -202,9 +210,9 @@ class SimpleVAELoss(nn.Module):
         x = x.float()
         
         B, C, H, W = x.shape
-        num_pixels = H * W
         
-        # Reconstruction Loss Masquée (MEAN au lieu de SUM)
+        # === RECONSTRUCTION LOSS (mean per pixel) ===
+        # Typiquement ~0.01-0.1 pour des images bien reconstruites [0,1]
         if mask is not None:
             mask = mask.float()
             if self.mode == 'mse':
@@ -220,18 +228,26 @@ class SimpleVAELoss(nn.Module):
         else:
             raise ValueError(f"Unknown recon loss mode: {self.mode}")
 
-        # KLD normalisée par le nombre d'images (batch size)
+        # === KLD LOSS (mean per latent dimension) ===
+        # -0.5 * sum(1 + logvar - mu^2 - exp(logvar)) normalisé par B * latent_dim
+        # Cela donne une valeur ~0.5-2.0 typiquement, comparable à recon_loss
         mu = mu.float()
         logvar = logvar.float()
-        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / B
+        latent_dim = mu.shape[1]
         
-        # Le ratio rigoureux souhaité : recon_mean + (beta/num_pixels) * kld_per_image
-        total = (recon_loss) + (self.beta * kld_loss)
+        # KLD par dimension, moyennée sur batch et dimensions
+        kld_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())  # (B, latent_dim)
+        kld_loss = kld_per_dim.mean()  # Moyenne sur tout (B et latent_dim)
         
-        # On multiplie par le facteur d'échelle (ex: 100) pour la lisibilité/stabilité
-        total = total * self.scale
+        # === TOTAL LOSS ===
+        # Avec beta=1 et les deux normalisées, elles ont un poids égal
+        # Pour un espace latent structuré, on veut recon > kld, donc beta < 1
+        total = recon_loss + (self.beta * kld_loss)
         
-        return total, recon_loss, kld_loss
+        # Scale pour affichage (ne change pas les gradients relatifs)
+        total_scaled = total * self.scale
+        
+        return total_scaled, recon_loss, kld_loss
 
 
 # ===================== PERCEPTUAL VAE LOSS =====================
@@ -245,10 +261,7 @@ class PerceptualVAELoss(nn.Module):
     - Multi-scale loss (hierarchical features)
     - KL divergence (latent regularization)
     
-    This loss is optimized for:
-    - Clustering: Clear separation of archetypes in latent space
-    - Interpolation: Smooth transitions between designs
-    - Generation: Valid wireframe sampling from N(0,I)
+    KLD is normalized per latent dimension for proper scaling with reconstruction.
     """
     
     def __init__(self, beta: float = 1.0,
@@ -274,39 +287,50 @@ class PerceptualVAELoss(nn.Module):
     
     def forward(self, recon_x, x, mu, logvar, mask=None):
         B = x.size(0)
-        # 1. L1 Reconstruction Loss
+        
+        # 1. L1 Reconstruction Loss (mean per pixel)
         if mask is not None:
             l1_loss = (torch.abs(recon_x - x) * mask).sum() / (mask.sum() + 1e-8)
         else:
             l1_loss = F.l1_loss(recon_x, x, reduction='mean')
         
-        # 2. SSIM Loss (structural)
+        # 2. SSIM Loss (structural) - already normalized [0, 1]
         ssim_loss = self.ssim_loss(recon_x, x, mask)
         
-        # 3. Gradient Loss (edges)
-        grad_loss = self.gradient_loss(recon_x, x, mask)
+        # 3. Gradient Loss (edges) - normalize per pixel
+        grad_loss_raw = self.gradient_loss(recon_x, x, mask)
+        if mask is not None:
+            grad_loss = grad_loss_raw / (mask.sum() + 1e-8)
+        else:
+            grad_loss = grad_loss_raw / (x.numel() + 1e-8)
         
-        # 4. Multi-scale Loss (hierarchical)
+        # 4. Multi-scale Loss (hierarchical) - normalize per pixel
         if self.use_multiscale:
-            ms_loss = self.multiscale_loss(recon_x, x, mask)
+            ms_loss_raw = self.multiscale_loss(recon_x, x, mask)
+            if mask is not None:
+                ms_loss = ms_loss_raw / (mask.sum() + 1e-8)
+            else:
+                ms_loss = ms_loss_raw / (x.numel() + 1e-8)
         else:
             ms_loss = 0.0
         
-        # Combine reconstruction losses
+        # Combine reconstruction losses (all ~same scale now)
         recon_loss = (self.lambda_l1 * l1_loss + 
                       self.lambda_ssim * ssim_loss + 
                       self.lambda_gradient * grad_loss +
                       self.lambda_multiscale * ms_loss)
         
-        # 5. KL Divergence (Average per image)
-        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / B
+        # 5. KL Divergence (mean per latent dimension)
+        latent_dim = mu.shape[1]
+        kld_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+        kld_loss = kld_per_dim.mean()  # Mean over B and latent_dim
         
         total = recon_loss + (self.beta * kld_loss)
         
-        # Global scaling
-        total = total * self.scale
+        # Global scaling for display
+        total_scaled = total * self.scale
         
-        return total, recon_loss, kld_loss
+        return total_scaled, recon_loss, kld_loss
 
 
 # ===================== LATENT REGULARIZATION =====================

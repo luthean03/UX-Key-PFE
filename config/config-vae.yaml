@@ -9,7 +9,7 @@ resume: null
 data:
   data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/vae_dataset_scaled"
   archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
-  batch_size: 8                    # Requis pour tailles variables
+  batch_size: 16                    # Requis pour tailles variables
   num_workers: 8                 # Parallélisation I/O
   valid_ratio: 0.2               # 80/20 train/valid split
   seed: 42                       # Reproductibilité
@@ -44,11 +44,16 @@ model:
 # ==================== LOSS (Optimisé pour espace latent STRUCTURÉ) ====================
 # Options: 'l1', 'mse', 'perceptual'
 # 'perceptual' = L1 + SSIM + Gradient + Multi-scale (recommandé pour wireframes)
+#
+# IMPORTANT: Avec la nouvelle normalisation, recon_loss et kld_loss sont à la même échelle (~0.01-0.5)
+# - beta_kld=1.0 : équilibre parfait (bon pour interpolation)
+# - beta_kld=0.1 : priorité reconstruction (meilleure qualité, moins de régularisation)
+# - beta_kld=0.01 : très peu de KLD (risque d'espace latent non structuré)
 loss:
-  name: "l1"             # NOUVEAU: Loss perceptuelle pour structure
-  beta_kld: 1                    # β-VAE: balance reconstruction vs régularisation latente
-  loss_scale: 100                # NOUVEAU: Facteur d'échelle pour amener la loss entre 0 et 100
-  warmup_epochs: 0               # KLD warmup progressif (évite posterior collapse)
+  name: "l1"                     # 'l1', 'mse', ou 'perceptual'
+  beta_kld: 0.5                  # Balance recon/kld (0.1-1.0 recommandé pour espace structuré)
+  loss_scale: 100                # Facteur d'échelle pour affichage (ne change pas les ratios)
+  warmup_epochs: 10              # KLD warmup progressif (évite posterior collapse au début)
   
   # Poids des composantes (uniquement pour name='perceptual')
   lambda_l1: 1.0                 # Précision pixel (reconstruction fidèle)
@@ -77,7 +82,7 @@ optim:
 optimization:
   lr: 0.0003
   weight_decay: 0.0001
-  accumulation_steps: 8          # Gradient accumulation
+  accumulation_steps: 4          # Gradient accumulation
   mixed_precision: true          # AMP pour vitesse + mémoire
   
   # === MIXUP / CUTMIX (Améliore généralisation) ===

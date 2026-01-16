@@ -419,7 +419,7 @@ def train(config):
 
                 bs = inputs.shape[0]
                 train_total += total_loss.item()
-                train_samples += bs
+                train_samples += 1  # Compter les batches, pas les samples (loss est déjà moyennée)
 
             if (i + 1) % grad_accumulation_steps != 0:
                 if use_amp:
@@ -457,7 +457,7 @@ def train(config):
                     val_recon_total += recon_loss.item()
                     val_kld_total += kld_loss.item()
                     val_total += total_loss.item()
-                    val_samples += inputs.shape[0]
+                    val_samples += 1  # Compter les batches, pas les samples (loss est déjà moyennée)
                     try:
                         batch_val = ssim_metric(recon, targets)
                         bs = inputs.shape[0]
