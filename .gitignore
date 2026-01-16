@@ -49,3 +49,4 @@ job.sbatch
 job.sbatch.*
 test*
 vae_dataset*
+dataset*
