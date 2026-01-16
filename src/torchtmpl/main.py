@@ -526,21 +526,15 @@ def train(config):
 
                     from torchvision.utils import save_image, make_grid
                     
-                    # For vertical stacking (mobile format): use padding between images
-                    # Create a separator (black line) between target and reconstruction
-                    pad_h = 4  # 4 pixels separator
-                    pad = torch.zeros(1, pad_h, tgt.shape[2])
+                    # Stack target and reconstruction for side-by-side display
+                    comparison = torch.stack([tgt, rec])  # (2, C, H, W)
                     
-                    # Concatenate vertically: target | separator | reconstruction
-                    vertical_comparison = torch.cat([tgt, pad, rec], dim=1)  # (C, H+pad+H, W)
-                    
-                    # Save as single vertical image
-                    save_image(vertical_comparison, logdir / f"reconstruction_epoch_{e}.png")
+                    # nrow=2 => Input | Recon (side by side)
+                    save_image(comparison, logdir / f"reconstruction_epoch_{e}.png", nrow=2)
                     
                     if writer is not None:
                         try:
-                            # For tensorboard, also use vertical stacking
-                            writer.add_image("reconstructions", vertical_comparison, e)
+                            writer.add_image("reconstructions", make_grid(comparison, nrow=2), e)
                         except Exception:
                             pass
             except Exception:
