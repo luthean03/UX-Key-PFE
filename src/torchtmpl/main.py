@@ -33,6 +33,88 @@ except Exception:
     TSNE = None
 
 
+# ==================== MIXUP / CUTMIX ====================
+def mixup_data(x, y, alpha=0.2, mask=None):
+    """Apply Mixup augmentation.
+    
+    Args:
+        x: Input images (batch)
+        y: Target images (batch)
+        alpha: Mixup parameter (higher = more mixing)
+        mask: Optional mask tensor (batch)
+    
+    Returns:
+        Mixed inputs, mixed targets, (mixed_mask if mask provided), lambda coefficient
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1.0
+    
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(x.device)
+    
+    mixed_x = lam * x + (1 - lam) * x[index]
+    mixed_y = lam * y + (1 - lam) * y[index]
+
+    if mask is not None:
+        mixed_mask = lam * mask + (1 - lam) * mask[index]
+        return mixed_x, mixed_y, mixed_mask, lam
+    
+    return mixed_x, mixed_y, lam
+
+
+def cutmix_data(x, y, alpha=1.0, mask=None):
+    """Apply CutMix augmentation.
+    
+    Args:
+        x: Input images (batch)
+        y: Target images (batch)
+        alpha: CutMix parameter
+        mask: Optional mask tensor
+    
+    Returns:
+        CutMix inputs, CutMix targets, (mixed_mask), lambda coefficient
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1.0
+    
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(x.device)
+    
+    # Get random bounding box
+    _, _, H, W = x.shape
+    cut_ratio = np.sqrt(1.0 - lam)
+    cut_h = int(H * cut_ratio)
+    cut_w = int(W * cut_ratio)
+    
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+    
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+    
+    # Apply CutMix
+    x_cutmix = x.clone()
+    x_cutmix[:, :, bby1:bby2, bbx1:bbx2] = x[index, :, bby1:bby2, bbx1:bbx2]
+    
+    y_cutmix = y.clone()
+    y_cutmix[:, :, bby1:bby2, bbx1:bbx2] = y[index, :, bby1:bby2, bbx1:bbx2]
+    
+    # Adjust lambda to reflect actual area ratio
+    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (W * H))
+
+    if mask is not None:
+        mask_cutmix = mask.clone()
+        mask_cutmix[:, :, bby1:bby2, bbx1:bbx2] = mask[index, :, bby1:bby2, bbx1:bbx2]
+        return x_cutmix, y_cutmix, mask_cutmix, lam
+    
+    return x_cutmix, y_cutmix, lam
+
 # Local imports
 from . import data
 from . import loss as loss_module
@@ -71,7 +153,7 @@ def _avg_ssim_on_loader(model, loader, device):
     ssim_count = 0
 
     model.eval()
-    with torch.inference_mode():
+    with torch.no_grad():
         for inputs, targets in loader:
             inputs, targets = inputs.to(device), targets.to(device)
             out = model(inputs)
@@ -277,11 +359,26 @@ def train(config):
             train_recon_total = 0.0
             train_kld_total = 0.0
             
+            # Récupère config Mixup/CutMix
+            use_mixup = optim_conf.get("use_mixup", False)
+            use_cutmix = optim_conf.get("use_cutmix", False)
+            mixup_alpha = optim_conf.get("mixup_alpha", 0.2)
+            cutmix_alpha = optim_conf.get("cutmix_alpha", 1.0)
+            mix_prob = optim_conf.get("mix_prob", 0.5)  # Probabilité d'appliquer mix
+            
             pbar = tqdm(train_loader, desc=f"Epoch {e}/{config['nepochs']}", dynamic_ncols=True)
             for i, (inputs, targets, masks) in enumerate(pbar):
                 inputs = inputs.to(device)
                 targets = targets.to(device)
                 masks = masks.to(device)
+                
+                # AMÉLIORATION: Apply Mixup/CutMix avec probabilité
+                apply_mix = (use_mixup or use_cutmix) and np.random.rand() < mix_prob
+                if apply_mix:
+                    if use_mixup and (not use_cutmix or np.random.rand() < 0.5):
+                        inputs, targets, masks, lam = mixup_data(inputs, targets, mixup_alpha, mask=masks)
+                    elif use_cutmix:
+                        inputs, targets, masks, lam = cutmix_data(inputs, targets, cutmix_alpha, mask=masks)
                 
                 # AMÉLIORATION: Forward pass avec AMP si activé
                 if use_amp:
@@ -322,7 +419,7 @@ def train(config):
 
                 bs = inputs.shape[0]
                 train_total += total_loss.item()
-                train_samples += 1  # Compter les batches, pas les samples (loss est déjà moyennée)
+                train_samples += bs
 
             if (i + 1) % grad_accumulation_steps != 0:
                 if use_amp:
@@ -349,7 +446,7 @@ def train(config):
             ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
             total_ssim = 0.0
             ssim_count = 0
-            with torch.inference_mode():
+            with torch.no_grad():
                 for inputs, targets, masks in valid_loader:
                     inputs, targets = inputs.to(device), targets.to(device)
                     masks = masks.to(device)
@@ -360,7 +457,7 @@ def train(config):
                     val_recon_total += recon_loss.item()
                     val_kld_total += kld_loss.item()
                     val_total += total_loss.item()
-                    val_samples += 1  # Compter les batches, pas les samples (loss est déjà moyennée)
+                    val_samples += inputs.shape[0]
                     try:
                         batch_val = ssim_metric(recon, targets)
                         bs = inputs.shape[0]
@@ -407,7 +504,7 @@ def train(config):
 
             # Recon preview
             try:
-                with torch.inference_mode():
+                with torch.no_grad():
                     sample_inputs, sample_targets, sample_masks = next(iter(valid_loader))
                     sample_inputs, sample_targets = sample_inputs.to(device), sample_targets.to(device)
                     sample_masks = sample_masks.to(device)
@@ -430,15 +527,12 @@ def train(config):
                     comparison = torch.stack([tgt, rec]) # (2, C, H, W)
                     from torchvision.utils import save_image, make_grid
 
-                    # Stack vertically for tall mobile images, horizontally for wider layouts
-                    # Detect aspect ratio: if height >> width, use nrow=1 (vertical stack)
-                    aspect_ratio = tgt.shape[1] / (tgt.shape[2] + 1e-8)  # height/width
-                    nrow = 1 if aspect_ratio > 2.0 else 2  # vertical if h > 2*w
-                    
-                    save_image(comparison, logdir / f"reconstruction_epoch_{e}.png", nrow=nrow)
+                    # Stack vertically (nrow=1) to properly display tall mobile images
+                    # Mobile aspect ratios (16:9, 19.5:9) need vertical stacking
+                    save_image(comparison, logdir / f"reconstruction_epoch_{e}.png", nrow=1)
                     if writer is not None:
                         try:
-                            writer.add_image("reconstructions", make_grid(comparison, nrow=nrow), e)
+                            writer.add_image("reconstructions", make_grid(comparison, nrow=1), e)
                         except Exception:
                             pass
             except Exception:
@@ -503,7 +597,7 @@ def train(config):
                 logging.info("Generating Latent Space Visualization...")
                 model.eval()
                 latents = []
-                with torch.inference_mode():
+                with torch.no_grad():
                     for i, (inputs, _, masks) in enumerate(valid_loader):
                         if i >= 1000:
                             break
@@ -661,7 +755,7 @@ def test(config):
     logging.info(f"Found {len(image_files)} images in {test_input_dir}")
     
     # Process each image
-    with torch.inference_mode():
+    with torch.no_grad():
         for idx, img_path in enumerate(tqdm(image_files, desc="Processing images")):
             try:
                 # Load image
@@ -722,8 +816,32 @@ def test(config):
     logging.info(f"Test completed. Results saved to {test_output_dir}")
 
 
-# SLERP est maintenant centralisé dans utils.py
-from .utils import slerp_numpy as slerp
+def slerp(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
+    """Spherical Linear Interpolation between two latent vectors.
+    
+    Args:
+        z1: First latent code (latent_dim,)
+        z2: Second latent code (latent_dim,)
+        alpha: Interpolation factor in [0, 1]
+    
+    Returns:
+        Interpolated latent code
+    """
+    # Normalize to unit vectors
+    z1_norm = z1 / (np.linalg.norm(z1) + 1e-8)
+    z2_norm = z2 / (np.linalg.norm(z2) + 1e-8)
+    
+    # Compute angle between vectors
+    dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
+    omega = np.arccos(dot)
+    sin_omega = np.sin(omega)
+    
+    # Handle nearly parallel vectors (use linear interpolation)
+    if np.abs(sin_omega) < 1e-6:
+        return (1 - alpha) * z1 + alpha * z2
+    
+    # SLERP formula
+    return (np.sin((1 - alpha) * omega) / sin_omega) * z1 + (np.sin(alpha * omega) / sin_omega) * z2
 
 
 def interpolate(config):
@@ -788,7 +906,7 @@ def interpolate(config):
     
     image_paths = [image1_path, image2_path]
     
-    with torch.inference_mode():
+    with torch.no_grad():
         for img_idx, img_path in enumerate(image_paths):
             if not os.path.exists(img_path):
                 raise FileNotFoundError(f"Image not found: {img_path}")
@@ -834,7 +952,7 @@ def interpolate(config):
     # Build interpolation frames with geometric interpolation
     interp_frames = []
     
-    with torch.inference_mode():
+    with torch.no_grad():
         # 1. Original image 1
         interp_frames.append(orig1_pil)
         
