@@ -33,88 +33,6 @@ except Exception:
     TSNE = None
 
 
-# ==================== MIXUP / CUTMIX ====================
-def mixup_data(x, y, alpha=0.2, mask=None):
-    """Apply Mixup augmentation.
-    
-    Args:
-        x: Input images (batch)
-        y: Target images (batch)
-        alpha: Mixup parameter (higher = more mixing)
-        mask: Optional mask tensor (batch)
-    
-    Returns:
-        Mixed inputs, mixed targets, (mixed_mask if mask provided), lambda coefficient
-    """
-    if alpha > 0:
-        lam = np.random.beta(alpha, alpha)
-    else:
-        lam = 1.0
-    
-    batch_size = x.size(0)
-    index = torch.randperm(batch_size).to(x.device)
-    
-    mixed_x = lam * x + (1 - lam) * x[index]
-    mixed_y = lam * y + (1 - lam) * y[index]
-
-    if mask is not None:
-        mixed_mask = lam * mask + (1 - lam) * mask[index]
-        return mixed_x, mixed_y, mixed_mask, lam
-    
-    return mixed_x, mixed_y, lam
-
-
-def cutmix_data(x, y, alpha=1.0, mask=None):
-    """Apply CutMix augmentation.
-    
-    Args:
-        x: Input images (batch)
-        y: Target images (batch)
-        alpha: CutMix parameter
-        mask: Optional mask tensor
-    
-    Returns:
-        CutMix inputs, CutMix targets, (mixed_mask), lambda coefficient
-    """
-    if alpha > 0:
-        lam = np.random.beta(alpha, alpha)
-    else:
-        lam = 1.0
-    
-    batch_size = x.size(0)
-    index = torch.randperm(batch_size).to(x.device)
-    
-    # Get random bounding box
-    _, _, H, W = x.shape
-    cut_ratio = np.sqrt(1.0 - lam)
-    cut_h = int(H * cut_ratio)
-    cut_w = int(W * cut_ratio)
-    
-    cx = np.random.randint(W)
-    cy = np.random.randint(H)
-    
-    bbx1 = np.clip(cx - cut_w // 2, 0, W)
-    bby1 = np.clip(cy - cut_h // 2, 0, H)
-    bbx2 = np.clip(cx + cut_w // 2, 0, W)
-    bby2 = np.clip(cy + cut_h // 2, 0, H)
-    
-    # Apply CutMix
-    x_cutmix = x.clone()
-    x_cutmix[:, :, bby1:bby2, bbx1:bbx2] = x[index, :, bby1:bby2, bbx1:bbx2]
-    
-    y_cutmix = y.clone()
-    y_cutmix[:, :, bby1:bby2, bbx1:bbx2] = y[index, :, bby1:bby2, bbx1:bbx2]
-    
-    # Adjust lambda to reflect actual area ratio
-    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (W * H))
-
-    if mask is not None:
-        mask_cutmix = mask.clone()
-        mask_cutmix[:, :, bby1:bby2, bbx1:bbx2] = mask[index, :, bby1:bby2, bbx1:bbx2]
-        return x_cutmix, y_cutmix, mask_cutmix, lam
-    
-    return x_cutmix, y_cutmix, lam
-
 # Local imports
 from . import data
 from . import loss as loss_module
@@ -359,26 +277,11 @@ def train(config):
             train_recon_total = 0.0
             train_kld_total = 0.0
             
-            # Récupère config Mixup/CutMix
-            use_mixup = optim_conf.get("use_mixup", False)
-            use_cutmix = optim_conf.get("use_cutmix", False)
-            mixup_alpha = optim_conf.get("mixup_alpha", 0.2)
-            cutmix_alpha = optim_conf.get("cutmix_alpha", 1.0)
-            mix_prob = optim_conf.get("mix_prob", 0.5)  # Probabilité d'appliquer mix
-            
             pbar = tqdm(train_loader, desc=f"Epoch {e}/{config['nepochs']}", dynamic_ncols=True)
             for i, (inputs, targets, masks) in enumerate(pbar):
                 inputs = inputs.to(device)
                 targets = targets.to(device)
                 masks = masks.to(device)
-                
-                # AMÉLIORATION: Apply Mixup/CutMix avec probabilité
-                apply_mix = (use_mixup or use_cutmix) and np.random.rand() < mix_prob
-                if apply_mix:
-                    if use_mixup and (not use_cutmix or np.random.rand() < 0.5):
-                        inputs, targets, masks, lam = mixup_data(inputs, targets, mixup_alpha, mask=masks)
-                    elif use_cutmix:
-                        inputs, targets, masks, lam = cutmix_data(inputs, targets, cutmix_alpha, mask=masks)
                 
                 # AMÉLIORATION: Forward pass avec AMP si activé
                 if use_amp:

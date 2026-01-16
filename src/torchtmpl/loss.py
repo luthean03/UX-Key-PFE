@@ -214,20 +214,23 @@ class SimpleVAELoss(nn.Module):
         
         B, C, H, W = x.shape
         
-        # === RECONSTRUCTION LOSS (mean per pixel) ===
-        # Typiquement ~0.01-0.1 pour des images bien reconstruites [0,1]
+        # === RECONSTRUCTION LOSS (SUM over all pixels) ===
+        # Changed from mean to sum to restore natural balance:
+        # - With sum: recon ~50,000 for 1M pixels, kld ~20 for 128 dims
+        # - With beta=1: total ~50,020, recon naturally dominates
+        # This prevents posterior collapse better than mean+small_beta
         if mask is not None:
             mask = mask.float()
             if self.mode == 'mse':
                 diff = ((recon_x - x) ** 2) * mask
             else:  # l1
                 diff = torch.abs(recon_x - x) * mask
-            # Moyenne sur les pixels non masqués
-            recon_loss = diff.sum() / (mask.sum() + 1e-8)
+            # Sum over all masked pixels (no division)
+            recon_loss = diff.sum()
         elif self.mode == 'mse':
-            recon_loss = F.mse_loss(recon_x, x, reduction='mean')
+            recon_loss = F.mse_loss(recon_x, x, reduction='sum')
         elif self.mode == 'l1':
-            recon_loss = F.l1_loss(recon_x, x, reduction='mean')
+            recon_loss = F.l1_loss(recon_x, x, reduction='sum')
         else:
             raise ValueError(f"Unknown recon loss mode: {self.mode}")
 
@@ -243,8 +246,8 @@ class SimpleVAELoss(nn.Module):
         kld_loss = kld_per_sample.mean()  # Moyenne sur batch
         
         # === TOTAL LOSS ===
-        # Avec beta=1 et les deux normalisées, elles ont un poids égal
-        # Pour un espace latent structuré, on veut recon > kld, donc beta < 1
+        # Reconstruction (sum over pixels) naturally dominates KLD (mean over batch over dims)
+        # E.g., recon ~50,000 vs kld ~20 → reconstruction is forced to be accurate
         total = recon_loss + (self.beta * kld_loss)
         
         # Scale pour affichage (ne change pas les gradients relatifs)
@@ -292,35 +295,32 @@ class PerceptualVAELoss(nn.Module):
     def forward(self, recon_x, x, mu, logvar, mask=None):
         B = x.size(0)
         
-        # 1. L1 Reconstruction Loss (mean per pixel)
+        # 1. L1 Reconstruction Loss (SUM over pixels, not mean)
+        # Changed to sum for natural balance with beta_kld=1
         if mask is not None:
-            l1_loss = (torch.abs(recon_x - x) * mask).sum() / (mask.sum() + 1e-8)
+            l1_loss = (torch.abs(recon_x - x) * mask).sum()
         else:
-            l1_loss = F.l1_loss(recon_x, x, reduction='mean')
+            l1_loss = F.l1_loss(recon_x, x, reduction='sum')
         
         # 2. SSIM Loss (structural) - already normalized [0, 1]
         ssim_loss = self.ssim_loss(recon_x, x, mask)
         
-        # 3. Gradient Loss (edges) - normalize per pixel
+        # 3. Gradient Loss (edges) - returns sum, need to scale appropriately
         grad_loss_raw = self.gradient_loss(recon_x, x, mask)
-        if mask is not None:
-            grad_loss = grad_loss_raw / (mask.sum() + 1e-8)
-        else:
-            grad_loss = grad_loss_raw / (x.numel() + 1e-8)
+        # Scale gradient loss relative to L1 loss for balance
+        grad_loss = grad_loss_raw
         
-        # 4. Multi-scale Loss (hierarchical) - normalize per pixel
+        # 4. Multi-scale Loss (hierarchical) - returns mean-reduced value
         if self.use_multiscale:
             ms_loss_raw = self.multiscale_loss(recon_x, x, mask)
-            if mask is not None:
-                ms_loss = ms_loss_raw / (mask.sum() + 1e-8)
-            else:
-                ms_loss = ms_loss_raw / (x.numel() + 1e-8)
+            ms_loss = ms_loss_raw
         else:
             ms_loss = 0.0
         
-        # Combine reconstruction losses (all ~same scale now)
+        # Combine reconstruction losses
+        # All components are now on similar scale (sum-based except SSIM which is [0,1])
         recon_loss = (self.lambda_l1 * l1_loss + 
-                      self.lambda_ssim * ssim_loss + 
+                      self.lambda_ssim * ssim_loss * l1_loss.detach() +
                       self.lambda_gradient * grad_loss +
                       self.lambda_multiscale * ms_loss)
         

@@ -174,13 +174,6 @@ class VAE(nn.Module):
         
         # Dropout configurable pour régularisation
         self.dropout_p = config.get("dropout_p", 0.0)
-        
-        # NOTE: Skip connections désactivées pour VAE pur.
-        # Les skip connections U-Net causent le posterior collapse car le décodeur
-        # peut "tricher" en regardant les pixels d'entrée, rendant z inutile.
-        # Pour un espace latent structuré (clustering/interpolation), on veut que
-        # TOUTE l'information passe par z.
-        self.use_skip_connections = False  # Forcé à False pour VAE
 
         # Encoder avec stockage des features intermédiaires
         self.enc_conv1 = nn.Sequential(
@@ -220,22 +213,13 @@ class VAE(nn.Module):
             self.dec_dropout1 = nn.Dropout2d(self.dropout_p)
         
         self.dec_up1 = nn.Upsample(scale_factor=2)
-        
-        # Ajustement des canaux pour skip connections
-        if self.use_skip_connections:
-            self.dec_block1 = ResidualBlock(256 + 256, 128)  # Concat skip de enc_block2
-        else:
-            self.dec_block1 = ResidualBlock(256, 128)
+        self.dec_block1 = ResidualBlock(256, 128)
         
         if self.dropout_p > 0:
             self.dec_dropout2 = nn.Dropout2d(self.dropout_p)
         
         self.dec_up2 = nn.Upsample(scale_factor=2)
-        
-        if self.use_skip_connections:
-            self.dec_block2 = ResidualBlock(128 + 128, 64)  # Concat skip de enc_block1
-        else:
-            self.dec_block2 = ResidualBlock(128, 64)
+        self.dec_block2 = ResidualBlock(128, 64)
         
         self.dec_up3 = nn.Upsample(scale_factor=2)
         self.dec_block3 = ResidualBlock(64, 32)
@@ -303,28 +287,12 @@ class VAE(nn.Module):
             d = self.dec_dropout1(d)
         
         d = self.dec_up1(d)  # (batch, 256, 128, 8)
-        
-        # Si skip connections activées, créer dummy skip de zéros
-        if self.use_skip_connections:
-            # Dummy skip de 256 canaux (de enc_block2)
-            dummy_skip1 = torch.zeros(d.shape[0], 256, d.shape[2], d.shape[3], 
-                                     device=d.device, dtype=d.dtype)
-            d = torch.cat([d, dummy_skip1], dim=1)  # (batch, 512, 128, 8)
-        
         d = self.dec_block1(d)
         
         if self.dropout_p > 0:
             d = self.dec_dropout2(d)
         
         d = self.dec_up2(d)  # (batch, 128, 256, 16)
-        
-        # Si skip connections activées, créer dummy skip de zéros
-        if self.use_skip_connections:
-            # Dummy skip de 128 canaux (de enc_block1)
-            dummy_skip2 = torch.zeros(d.shape[0], 128, d.shape[2], d.shape[3],
-                                     device=d.device, dtype=d.dtype)
-            d = torch.cat([d, dummy_skip2], dim=1)  # (batch, 256, 256, 16)
-        
         d = self.dec_block2(d)
         
         d = self.dec_up3(d)
@@ -366,10 +334,7 @@ class VAE(nn.Module):
              m3 = F.interpolate(mask, size=e3.shape[2:], mode='nearest')
         else: m3 = None
 
-        if self.use_skip_connections:
-            features = self.enc_block3(e3, mask=m3)
-        else:
-            features = self.enc_block3(e3, mask=m3)
+        features = self.enc_block3(e3, mask=m3)
         
         if mask is not None:
             m_feat = F.interpolate(mask, size=features.shape[2:], mode='nearest')
