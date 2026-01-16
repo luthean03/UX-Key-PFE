@@ -184,18 +184,21 @@ class MultiScaleLoss(nn.Module):
 class SimpleVAELoss(nn.Module):
     """Simple VAE loss using L1 or MSE reconstruction + KLD.
 
-    IMPORTANT pour un espace latent structuré (clustering + interpolation):
-    - recon_loss doit dominer légèrement pour une bonne reconstruction
-    - kld_loss régularise l'espace latent (proche de N(0,I))
-    - beta contrôle ce trade-off (beta < 1 = plus de reconstruction)
-
-    La KLD est normalisée PAR DIMENSION LATENTE pour être à la même échelle
-    que la reconstruction (typiquement ~0.01-0.1 pour des images [0,1]).
+    Standard VAE ELBO loss: L = E[log p(x|z)] - beta * KL(q(z|x) || p(z))
+    
+    Normalisation:
+    - recon_loss: mean per pixel (~0.01-0.1 pour images [0,1] bien reconstruites)
+    - kld_loss: sum over latent dims, mean over batch (standard VAE)
+                Typ. ~50-200 pour latent_dim=128 au début, ~10-50 après convergence
+    
+    Pour équilibrer les deux termes:
+    - beta ~0.0001-0.001 si on veut que reconstruction domine (espace latent structuré)
+    - beta ~0.01-0.1 si on veut plus de régularisation (génération depuis N(0,I))
 
     Args:
         mode: 'l1' or 'mse'
-        beta: weight for KLD term (try 0.0001 to 0.01 for structured latent)
-        scale: global scaling factor for display (doesn't change ratios)
+        beta: weight for KLD (typ. 0.0001-0.01 pour clustering, 0.01-0.1 pour generation)
+        scale: global scaling factor for display only
     """
 
     def __init__(self, mode='l1', beta=1.0, scale=1.0):
@@ -228,16 +231,16 @@ class SimpleVAELoss(nn.Module):
         else:
             raise ValueError(f"Unknown recon loss mode: {self.mode}")
 
-        # === KLD LOSS (mean per latent dimension) ===
-        # -0.5 * sum(1 + logvar - mu^2 - exp(logvar)) normalisé par B * latent_dim
-        # Cela donne une valeur ~0.5-2.0 typiquement, comparable à recon_loss
+        # === KLD LOSS (standard VAE: sum over latent dims, mean over batch) ===
+        # Formula: -0.5 * sum_j(1 + logvar_j - mu_j^2 - exp(logvar_j))
+        # La somme sur les dimensions est STANDARD pour un VAE.
+        # On moyenne sur le batch pour avoir une loss indépendante de batch_size.
         mu = mu.float()
         logvar = logvar.float()
-        latent_dim = mu.shape[1]
         
-        # KLD par dimension, moyennée sur batch et dimensions
-        kld_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())  # (B, latent_dim)
-        kld_loss = kld_per_dim.mean()  # Moyenne sur tout (B et latent_dim)
+        # KLD: somme sur dimensions latentes, moyenne sur batch
+        kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)  # (B,)
+        kld_loss = kld_per_sample.mean()  # Moyenne sur batch
         
         # === TOTAL LOSS ===
         # Avec beta=1 et les deux normalisées, elles ont un poids égal
@@ -255,13 +258,14 @@ class PerceptualVAELoss(nn.Module):
     """Advanced VAE loss with perceptual components for structure preservation.
     
     Combines:
-    - L1 reconstruction (pixel accuracy)
-    - SSIM (structural similarity)
-    - Gradient loss (edge preservation)
-    - Multi-scale loss (hierarchical features)
-    - KL divergence (latent regularization)
+    - L1 reconstruction (pixel accuracy, mean per pixel)
+    - SSIM (structural similarity, ~[0,1])
+    - Gradient loss (edge preservation, normalized per pixel)
+    - Multi-scale loss (hierarchical features, normalized)
+    - KL divergence (sum over dims, mean over batch - standard VAE)
     
-    KLD is normalized per latent dimension for proper scaling with reconstruction.
+    IMPORTANT: La KLD est typ. ~50-200 (pour latent_dim=128), donc beta doit
+    être petit (~0.0001-0.001) pour équilibrer avec recon_loss (~0.05).
     """
     
     def __init__(self, beta: float = 1.0,
@@ -320,10 +324,9 @@ class PerceptualVAELoss(nn.Module):
                       self.lambda_gradient * grad_loss +
                       self.lambda_multiscale * ms_loss)
         
-        # 5. KL Divergence (mean per latent dimension)
-        latent_dim = mu.shape[1]
-        kld_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-        kld_loss = kld_per_dim.mean()  # Mean over B and latent_dim
+        # 5. KL Divergence (standard: sum over dims, mean over batch)
+        kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)  # (B,)
+        kld_loss = kld_per_sample.mean()  # Mean over batch
         
         total = recon_loss + (self.beta * kld_loss)
         

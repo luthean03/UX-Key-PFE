@@ -51,7 +51,7 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
     images = []  # Stocker aussi les images
     
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         for idx, img_path in enumerate(archetype_files):
             # Extract archetype name
             archetype_name = img_path.stem.replace("_linear", "")
@@ -190,42 +190,8 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-def slerp(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
-    """Spherical Linear Interpolation (SLERP) between two latent codes.
-    
-    SLERP preserves the norm of latent vectors, providing smoother
-    interpolations than linear interpolation.
-    
-    Args:
-        z1: (latent_dim,) first latent code
-        z2: (latent_dim,) second latent code  
-        alpha: interpolation factor in [0, 1]
-        
-    Returns:
-        z_interp: interpolated latent code
-    """
-    # Normalize to unit vectors
-    z1_norm = z1 / (np.linalg.norm(z1) + 1e-8)
-    z2_norm = z2 / (np.linalg.norm(z2) + 1e-8)
-    
-    # Compute angle between vectors
-    dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
-    omega = np.arccos(dot)
-    sin_omega = np.sin(omega)
-    
-    # Handle nearly parallel vectors (use lerp instead)
-    if np.abs(sin_omega) < 1e-6:
-        return (1 - alpha) * z1 + alpha * z2
-    
-    # Scale back to original magnitudes (average of both)
-    scale1 = np.linalg.norm(z1)
-    scale2 = np.linalg.norm(z2)
-    scale = (1 - alpha) * scale1 + alpha * scale2
-    
-    z_interp = (np.sin((1 - alpha) * omega) / sin_omega) * z1_norm + \
-               (np.sin(alpha * omega) / sin_omega) * z2_norm
-    
-    return z_interp * scale
+# SLERP est centralisé dans utils.py
+from .utils import slerp_numpy as slerp
 
 
 # ⚠️  INTERPOLATION TENSORBOARD REMOVED
@@ -308,7 +274,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
     train_latents = []
     train_indices = []
     
-    with torch.no_grad():
+    with torch.inference_mode():
         for i, (inputs, _, masks) in enumerate(train_loader):
             if i >= max_samples:
                 break

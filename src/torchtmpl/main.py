@@ -153,7 +153,7 @@ def _avg_ssim_on_loader(model, loader, device):
     ssim_count = 0
 
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         for inputs, targets in loader:
             inputs, targets = inputs.to(device), targets.to(device)
             out = model(inputs)
@@ -446,7 +446,7 @@ def train(config):
             ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
             total_ssim = 0.0
             ssim_count = 0
-            with torch.no_grad():
+            with torch.inference_mode():
                 for inputs, targets, masks in valid_loader:
                     inputs, targets = inputs.to(device), targets.to(device)
                     masks = masks.to(device)
@@ -504,7 +504,7 @@ def train(config):
 
             # Recon preview
             try:
-                with torch.no_grad():
+                with torch.inference_mode():
                     sample_inputs, sample_targets, sample_masks = next(iter(valid_loader))
                     sample_inputs, sample_targets = sample_inputs.to(device), sample_targets.to(device)
                     sample_masks = sample_masks.to(device)
@@ -596,7 +596,7 @@ def train(config):
                 logging.info("Generating Latent Space Visualization...")
                 model.eval()
                 latents = []
-                with torch.no_grad():
+                with torch.inference_mode():
                     for i, (inputs, _, masks) in enumerate(valid_loader):
                         if i >= 1000:
                             break
@@ -754,7 +754,7 @@ def test(config):
     logging.info(f"Found {len(image_files)} images in {test_input_dir}")
     
     # Process each image
-    with torch.no_grad():
+    with torch.inference_mode():
         for idx, img_path in enumerate(tqdm(image_files, desc="Processing images")):
             try:
                 # Load image
@@ -815,32 +815,8 @@ def test(config):
     logging.info(f"Test completed. Results saved to {test_output_dir}")
 
 
-def slerp(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
-    """Spherical Linear Interpolation between two latent vectors.
-    
-    Args:
-        z1: First latent code (latent_dim,)
-        z2: Second latent code (latent_dim,)
-        alpha: Interpolation factor in [0, 1]
-    
-    Returns:
-        Interpolated latent code
-    """
-    # Normalize to unit vectors
-    z1_norm = z1 / (np.linalg.norm(z1) + 1e-8)
-    z2_norm = z2 / (np.linalg.norm(z2) + 1e-8)
-    
-    # Compute angle between vectors
-    dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
-    omega = np.arccos(dot)
-    sin_omega = np.sin(omega)
-    
-    # Handle nearly parallel vectors (use linear interpolation)
-    if np.abs(sin_omega) < 1e-6:
-        return (1 - alpha) * z1 + alpha * z2
-    
-    # SLERP formula
-    return (np.sin((1 - alpha) * omega) / sin_omega) * z1 + (np.sin(alpha * omega) / sin_omega) * z2
+# SLERP est maintenant centralisé dans utils.py
+from .utils import slerp_numpy as slerp
 
 
 def interpolate(config):
@@ -905,7 +881,7 @@ def interpolate(config):
     
     image_paths = [image1_path, image2_path]
     
-    with torch.no_grad():
+    with torch.inference_mode():
         for img_idx, img_path in enumerate(image_paths):
             if not os.path.exists(img_path):
                 raise FileNotFoundError(f"Image not found: {img_path}")
@@ -951,7 +927,7 @@ def interpolate(config):
     # Build interpolation frames with geometric interpolation
     interp_frames = []
     
-    with torch.no_grad():
+    with torch.inference_mode():
         # 1. Original image 1
         interp_frames.append(orig1_pil)
         
