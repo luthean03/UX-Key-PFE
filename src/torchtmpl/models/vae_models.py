@@ -200,9 +200,11 @@ class VAE(nn.Module):
         self.fc_mu = nn.Linear(self.spp_out_dim, self.latent_dim)
         self.fc_logvar = nn.Linear(self.spp_out_dim, self.latent_dim)
 
-        # Make decoder base more elongated to better match tall web pages
-        # (increase vertical resolution to reduce upsample distortion)
-        self.dec_h, self.dec_w = 64, 4
+        # === DECODER ASPECT RATIO CORRECTION ===
+        # Previous: 64x4 (Ratio 16:1) → Too narrow, caused horizontal squashing/artifacts
+        # Current: 32x16 (Ratio 2:1) → Perfect for mobile screens (e.g., 19.5:9, typical 1024x512)
+        # This matches wireframe proportions and allows better information flow through bottleneck
+        self.dec_h, self.dec_w = 32, 16
         self.dec_channels = 256
         self.fc_decode = nn.Linear(self.latent_dim, self.dec_channels * self.dec_h * self.dec_w)
 
