@@ -304,10 +304,18 @@ def get_dataloaders(data_config, use_cuda):
     g = torch.Generator()
     g.manual_seed(seed)
 
-    train_loader = DataLoader(
+    # Use SmartBatchSampler for training to minimize padding overhead
+    train_sampler = SmartBatchSampler(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=True  # Shuffle with noise to keep sizes grouped
+    )
+    
+    # For validation: use standard DataLoader (no SmartBatchSampler)
+    # This ensures consistent image ordering for reconstruction previews
+    train_loader = DataLoader(
+        train_dataset,
+        batch_sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=use_cuda,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
