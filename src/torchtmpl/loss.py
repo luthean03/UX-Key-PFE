@@ -187,12 +187,14 @@ class SimpleVAELoss(nn.Module):
     Args:
         mode: 'l1' or 'mse'
         beta: weight for KLD term
+        scale: global scaling factor for the total loss
     """
 
-    def __init__(self, mode='l1', beta=1.0):
+    def __init__(self, mode='l1', beta=1.0, scale=1.0):
         super().__init__()
         self.mode = mode
         self.beta = beta
+        self.scale = scale
 
     def forward(self, recon_x, x, mu, logvar, mask=None):
         # Force FP32 pour la précision
@@ -221,14 +223,14 @@ class SimpleVAELoss(nn.Module):
         # KLD normalisée par le nombre d'images (batch size)
         mu = mu.float()
         logvar = logvar.float()
-        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) 
+        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / B
         
         # Le ratio rigoureux souhaité : recon_mean + (beta/num_pixels) * kld_per_image
-        # On multiplie tout par num_pixels pour la stabilité numérique (gradients plus forts)
         total = (recon_loss) + (self.beta * kld_loss)
         
-        # On retourne les valeurs "humainement lisibles" (normalisées) pour les logs
-        # mais la 'total' sera utilisée pour le backward.
+        # On multiplie par le facteur d'échelle (ex: 100) pour la lisibilité/stabilité
+        total = total * self.scale
+        
         return total, recon_loss, kld_loss
 
 
@@ -254,7 +256,8 @@ class PerceptualVAELoss(nn.Module):
                  lambda_ssim: float = 0.5,
                  lambda_gradient: float = 0.1,
                  lambda_multiscale: float = 0.2,
-                 use_multiscale: bool = True):
+                 use_multiscale: bool = True,
+                 scale: float = 1.0):
         super().__init__()
         self.beta = beta
         self.lambda_l1 = lambda_l1
@@ -262,6 +265,7 @@ class PerceptualVAELoss(nn.Module):
         self.lambda_gradient = lambda_gradient
         self.lambda_multiscale = lambda_multiscale
         self.use_multiscale = use_multiscale
+        self.scale = scale
         
         self.ssim_loss = SSIMLoss()
         self.gradient_loss = GradientLoss()
@@ -269,11 +273,12 @@ class PerceptualVAELoss(nn.Module):
             self.multiscale_loss = MultiScaleLoss(scales=[1.0, 0.5, 0.25])
     
     def forward(self, recon_x, x, mu, logvar, mask=None):
+        B = x.size(0)
         # 1. L1 Reconstruction Loss
         if mask is not None:
-            l1_loss = (torch.abs(recon_x - x) * mask).sum()
+            l1_loss = (torch.abs(recon_x - x) * mask).sum() / (mask.sum() + 1e-8)
         else:
-            l1_loss = F.l1_loss(recon_x, x, reduction='sum')
+            l1_loss = F.l1_loss(recon_x, x, reduction='mean')
         
         # 2. SSIM Loss (structural)
         ssim_loss = self.ssim_loss(recon_x, x, mask)
@@ -289,14 +294,18 @@ class PerceptualVAELoss(nn.Module):
         
         # Combine reconstruction losses
         recon_loss = (self.lambda_l1 * l1_loss + 
-                      self.lambda_ssim * ssim_loss * recon_x.numel() +  # Scale SSIM to same magnitude
+                      self.lambda_ssim * ssim_loss + 
                       self.lambda_gradient * grad_loss +
                       self.lambda_multiscale * ms_loss)
         
-        # 5. KL Divergence
-        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        # 5. KL Divergence (Average per image)
+        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / B
         
         total = recon_loss + (self.beta * kld_loss)
+        
+        # Global scaling
+        total = total * self.scale
+        
         return total, recon_loss, kld_loss
 
 
@@ -336,14 +345,16 @@ def get_vae_loss(loss_config: dict):
     Expected keys in loss_config:
       - name: 'l1' | 'mse' | 'perceptual'
       - beta_kld: float (weight for KL divergence)
+      - loss_scale: float (global scaling factor, default 1.0)
       - lambda_ssim: float (weight for SSIM, only for perceptual)
       - lambda_gradient: float (weight for gradient loss, only for perceptual)
     """
     name = loss_config.get('name', 'l1').lower()
     beta = loss_config.get('beta_kld', loss_config.get('beta', 0.001))
+    scale = float(loss_config.get('loss_scale', 1.0))
     
     if name in ('l1', 'mse'):
-        return SimpleVAELoss(mode=name, beta=beta)
+        return SimpleVAELoss(mode=name, beta=beta, scale=scale)
     
     if name == 'perceptual':
         return PerceptualVAELoss(
@@ -353,6 +364,7 @@ def get_vae_loss(loss_config: dict):
             lambda_gradient=loss_config.get('lambda_gradient', 0.1),
             lambda_multiscale=loss_config.get('lambda_multiscale', 0.2),
             use_multiscale=loss_config.get('use_multiscale', True),
+            scale=scale
         )
     
     raise ValueError(f"Unknown loss name: {name}. Use 'l1', 'mse', or 'perceptual'.")

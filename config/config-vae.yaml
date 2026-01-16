@@ -47,6 +47,7 @@ model:
 loss:
   name: "l1"             # NOUVEAU: Loss perceptuelle pour structure
   beta_kld: 1                    # β-VAE: balance reconstruction vs régularisation latente
+  loss_scale: 100                # NOUVEAU: Facteur d'échelle pour amener la loss entre 0 et 100
   warmup_epochs: 0               # KLD warmup progressif (évite posterior collapse)
   
   # Poids des composantes (uniquement pour name='perceptual')
