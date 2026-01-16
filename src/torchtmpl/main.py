@@ -430,11 +430,15 @@ def train(config):
                     comparison = torch.stack([tgt, rec]) # (2, C, H, W)
                     from torchvision.utils import save_image, make_grid
 
-                    # nrow=2 => Input | Recon
-                    save_image(comparison, logdir / f"reconstruction_epoch_{e}.png", nrow=2)
+                    # Stack vertically for tall mobile images, horizontally for wider layouts
+                    # Detect aspect ratio: if height >> width, use nrow=1 (vertical stack)
+                    aspect_ratio = tgt.shape[1] / (tgt.shape[2] + 1e-8)  # height/width
+                    nrow = 1 if aspect_ratio > 2.0 else 2  # vertical if h > 2*w
+                    
+                    save_image(comparison, logdir / f"reconstruction_epoch_{e}.png", nrow=nrow)
                     if writer is not None:
                         try:
-                            writer.add_image("reconstructions", make_grid(comparison, nrow=2), e)
+                            writer.add_image("reconstructions", make_grid(comparison, nrow=nrow), e)
                         except Exception:
                             pass
             except Exception:
