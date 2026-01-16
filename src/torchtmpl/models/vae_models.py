@@ -472,7 +472,7 @@ class VAE(nn.Module):
     
     @staticmethod
     def slerp(z1: torch.Tensor, z2: torch.Tensor, alpha: float) -> torch.Tensor:
-        \"\"\"Spherical Linear Interpolation (SLERP) between two latent codes.
+        """Spherical Linear Interpolation (SLERP) between two latent codes.
         
         Delegates to centralized implementation in utils.py.
         
