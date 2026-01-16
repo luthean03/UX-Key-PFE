@@ -7,7 +7,7 @@
 resume: null 
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/copy"
+  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/vae_dataset_scaled"
   archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
   batch_size: 16                    # SmartBatchSampler groups similar-sized images to minimize padding
   num_workers: 8                 # Parallélisation I/O
