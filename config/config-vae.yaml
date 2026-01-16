@@ -38,21 +38,23 @@ model:
   class: "VAE"                   # Doit correspondre à vae_models.py
   latent_dim: 128                # Dimension espace latent
   input_channels: 1              # Grayscale
-  dropout_p: 0.15                # Dropout dans decoder
-  use_skip_connections: true     # Skip connections U-Net (préserve détails)
+  dropout_p: 0.1                 # Dropout dans decoder (réduit pour VAE pur)
+  # use_skip_connections: false  # DÉSACTIVÉ: cause posterior collapse dans un VAE
+                                 # (le décodeur "triche" en regardant les pixels d'entrée)
 
 # ==================== LOSS (Optimisé pour espace latent STRUCTURÉ) ====================
 # Options: 'l1', 'mse', 'perceptual'
 # 'perceptual' = L1 + SSIM + Gradient + Multi-scale (recommandé pour wireframes)
 #
-# IMPORTANT: Avec la nouvelle normalisation, recon_loss et kld_loss sont à la même échelle (~0.01-0.5)
-# - beta_kld=1.0 : équilibre parfait (bon pour interpolation)
-# - beta_kld=0.1 : priorité reconstruction (meilleure qualité, moins de régularisation)
-# - beta_kld=0.01 : très peu de KLD (risque d'espace latent non structuré)
+# NORMALISATION STANDARD VAE:
+# - recon_loss: mean per pixel (~0.01-0.1 pour images bien reconstruites)
+# - kld_loss: SUM sur dims latentes, MEAN sur batch (~50-200 au début, ~10-50 après)
+#
+# Pour équilibrer: beta_kld ~0.0001-0.001 pour clustering, ~0.01 pour génération
 loss:
   name: "l1"                     # 'l1', 'mse', ou 'perceptual'
-  beta_kld: 0.5                  # Balance recon/kld (0.1-1.0 recommandé pour espace structuré)
-  loss_scale: 100                # Facteur d'échelle pour affichage (ne change pas les ratios)
+  beta_kld: 0.0005               # AJUSTÉ: recon (~0.05) vs kld (~100) → beta*kld ~ 0.05
+  loss_scale: 1                  # Pas de scaling (valeurs naturelles pour debug)
   warmup_epochs: 10              # KLD warmup progressif (évite posterior collapse au début)
   
   # Poids des composantes (uniquement pour name='perceptual')
@@ -78,19 +80,22 @@ optim:
       eta_min: 0.000003          # LR minimum (plancher)
       verbose: true
 
-# ==================== OPTIMIZATION ====================
+# ==================== TRAINING OPTIMIZATION ====================
+# NOTE: lr et weight_decay sont définis dans optim.params (source unique de vérité)
 optimization:
-  lr: 0.0003
-  weight_decay: 0.0001
-  accumulation_steps: 4          # Gradient accumulation
+  accumulation_steps: 4          # Gradient accumulation (effective batch = batch_size * accumulation_steps)
   mixed_precision: true          # AMP pour vitesse + mémoire
   
-  # === MIXUP / CUTMIX (Améliore généralisation) ===
-  use_mixup: true
+  # === MIXUP / CUTMIX (DÉSACTIVÉ pour VAE) ===
+  # Ces techniques sont conçues pour la classification, pas pour les VAE.
+  # - Mixup crée des images "fantômes" (0.5*A + 0.5*B) que le VAE apprend à reconstruire
+  # - CutMix détruit la cohérence spatiale des wireframes (Header/Footer/Layout)
+  # Pour un VAE, on préfère des augmentations géométriques (flip, rotation légère)
+  use_mixup: false
   mixup_alpha: 0.2
-  use_cutmix: true
+  use_cutmix: false
   cutmix_alpha: 1.0
-  mix_prob: 0.3                  # Probabilité d'appliquer mix (30% des batches)
+  mix_prob: 0.0                  # Désactivé
 
 # ==================== LOGGING ====================
 logging:
