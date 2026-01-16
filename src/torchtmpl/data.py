@@ -304,23 +304,10 @@ def get_dataloaders(data_config, use_cuda):
     g = torch.Generator()
     g.manual_seed(seed)
 
-    # Use SmartBatchSampler for training to minimize padding overhead
-    train_sampler = SmartBatchSampler(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True  # Shuffle with noise to keep sizes grouped
-    )
-    
-    # Validation can also benefit from smart batching (deterministic)
-    valid_sampler = SmartBatchSampler(
-        valid_dataset,
-        batch_size=batch_size,
-        shuffle=False  # No shuffling for reproducibility
-    )
-
     train_loader = DataLoader(
         train_dataset,
-        batch_sampler=train_sampler,
+        batch_size=batch_size,
+        shuffle=True,
         num_workers=num_workers,
         pin_memory=use_cuda,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
@@ -329,7 +316,8 @@ def get_dataloaders(data_config, use_cuda):
     )
     valid_loader = DataLoader(
         valid_dataset,
-        batch_sampler=valid_sampler,
+        batch_size=batch_size,
+        shuffle=False,
         num_workers=num_workers,
         pin_memory=use_cuda,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
