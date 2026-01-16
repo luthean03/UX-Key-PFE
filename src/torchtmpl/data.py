@@ -1,7 +1,7 @@
 # src/torchtmpl/data.py
 import torch
 from torch.utils.data import Dataset, DataLoader, Sampler
-from PIL import Image, ImageOps
+from PIL import Image
 import os
 import torchvision.transforms.functional as TF
 import torchvision.transforms as T
@@ -133,14 +133,7 @@ class VariableSizeDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = os.path.join(self.root_dir, self.files[idx])
-        
-        # === EXIF ROTATION HANDLING ===
-        # Phones often store vertical photos with orientation metadata but no actual rotation.
-        # PIL loads the raw image data without applying EXIF rotation by default.
-        # This causes vertical images (e.g., 1000x3000) to be loaded as landscape (3000x1000).
-        img_pil = Image.open(img_path)
-        img_pil = ImageOps.exif_transpose(img_pil)  # Apply EXIF rotation if present
-        clean_image = img_pil.convert('L')
+        clean_image = Image.open(img_path).convert('L')
         
         # === CROP pour éviter le OOM ===
         w, h = clean_image.size
@@ -311,13 +304,8 @@ def get_dataloaders(data_config, use_cuda):
         shuffle=True  # Shuffle with noise to keep sizes grouped
     )
     
-    # Validation can also benefit from smart batching (deterministic)
-    valid_sampler = SmartBatchSampler(
-        valid_dataset,
-        batch_size=batch_size,
-        shuffle=False  # No shuffling for reproducibility
-    )
-
+    # For validation: use standard DataLoader (no SmartBatchSampler)
+    # This ensures consistent image ordering for reconstruction previews
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=train_sampler,
@@ -329,7 +317,8 @@ def get_dataloaders(data_config, use_cuda):
     )
     valid_loader = DataLoader(
         valid_dataset,
-        batch_sampler=valid_sampler,
+        batch_size=batch_size,
+        shuffle=False,
         num_workers=num_workers,
         pin_memory=use_cuda,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
