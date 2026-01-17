@@ -125,4 +125,4 @@ interpolate:
   image2_path: "./test/test_input/wireframe_3024123_linear.png"  # Chemin à l'image 2
   output_dir: "./test/interpolate_output"            # Dossier pour enregistrer la grille d'interpolation
   num_steps: 10                                 # Nombre de frames d'interpolation entre les deux images
-  model_path: "logs/VAE_18/best_model.pt"       # Checkpoint du modèle entraîné
+  model_path: "logs/VAE_0/best_model.pt"       # Checkpoint du modèle entraîné
