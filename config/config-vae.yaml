@@ -116,7 +116,7 @@ early_stopping:
 test:
   test_input_dir: "./test/test_input"          # Dossier contenant les images à tester
   test_output_dir: "./test/test_output"        # Dossier pour enregistrer les résultats (grilles de comparaison)
-  model_path: "logs/VAE_18/best_model.pt" # Chemin vers le checkpoint du modèle entraîné
+  model_path: "logs/VAE_0/best_model.pt" # Chemin vers le checkpoint du modèle entraîné
 # ==================== INTERPOLATION ====================
 # Interpolate between two images in latent space
 # Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml interpolate
