@@ -4,7 +4,7 @@
 
 # === RESUME TRAINING (Optionnel) ===
 # Chemin vers un checkpoint (.pt) pour reprendre l'entraînement
-resume: null 
+resume: "logs/VAE_0/bes_model.pt" 
 
 data:
   data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/vae_dataset_scaled"
@@ -56,7 +56,7 @@ loss:
   name: "l1"                     # 'l1', 'mse', ou 'perceptual'
   beta_kld: 1.0                  # Using sum reduction: naturally balanced at 1.0
   loss_scale: 1                  # Pas de scaling (valeurs naturelles pour debug)
-  warmup_epochs: 10              # KLD warmup progressif (évite posterior collapse au début)
+  warmup_epochs: 0              # KLD warmup progressif (évite posterior collapse au début)
   
   # Poids des composantes (uniquement pour name='perceptual')
   lambda_l1: 1.0                 # Précision pixel (reconstruction fidèle)
