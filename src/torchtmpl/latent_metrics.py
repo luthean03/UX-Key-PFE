@@ -61,14 +61,11 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
                 # Load image
                 img = Image.open(img_path).convert('L')
                 
-                # === PREPROCESSING IDENTIQUE AU TRAINING ===
-                # CROP si trop grand (comme dans data.py ligne 71-78)
+                # Crop if image is taller than max_height (center crop, same as validation)
                 w, h = img.size
                 if h > max_height:
-                    # Crop déterministe au centre (comme validation)
                     top = (h - max_height) // 2
                     img = img.crop((0, top, w, top + max_height))
-                # ===========================================
                 
                 # Transform to tensor
                 import torchvision.transforms.functional as TF
