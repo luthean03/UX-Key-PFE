@@ -544,11 +544,13 @@ def train(config):
                     sample_inputs, sample_targets, sample_masks = next(iter(valid_loader))
                     sample_inputs, sample_targets = sample_inputs.to(device), sample_targets.to(device)
                     sample_masks = sample_masks.to(device)
-                    sample_recon, _, _ = model(sample_inputs, mask=sample_masks)
                     
-                    sample_recon = sample_recon * sample_masks  # Zéros sur padding
-                    sample_inputs = sample_inputs * sample_masks  # Masquer l'input aussi
-                    sample_targets = sample_targets * sample_masks  # Cohérence
+                    # IMPORTANT: Use sample_targets (clean images) for reconstruction preview
+                    # to match the behavior of test() function which uses clean images
+                    sample_recon, _, _ = model(sample_targets, mask=sample_masks)
+                    
+                    sample_recon = sample_recon * sample_masks  # Zeros on padding
+                    sample_targets = sample_targets * sample_masks  # Consistency
                     
                     # Select first image in batch and crop to valid mask area
                     idx = 0
