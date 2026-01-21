@@ -486,7 +486,9 @@ def train(config):
                 for inputs, targets, masks in valid_loader:
                     inputs, targets = inputs.to(device), targets.to(device)
                     masks = masks.to(device)
-                    recon, mu, logvar = model(inputs, mask=masks)
+                    # Use targets (clean images) for validation reconstruction
+                    # to match test() behavior - we're not doing denoising in validation
+                    recon, mu, logvar = model(targets, mask=masks)
                     
                     # SimpleVAELoss retourne (total, recon, kld)
                     total_loss, recon_loss, kld_loss = criterion(recon, targets, mu, logvar, mask=masks)
