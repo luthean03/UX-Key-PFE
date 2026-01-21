@@ -268,12 +268,14 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
     train_indices = []
     
     with torch.inference_mode():
-        for i, (inputs, _, masks) in enumerate(train_loader):
+        for i, (inputs, targets, masks) in enumerate(train_loader):
             if i >= max_samples:
                 break
-            inputs = inputs.to(device)
+            # Use targets (clean images) for latent space visualization
+            # We want to visualize the latent space of real data, not augmented/noisy versions
+            targets = targets.to(device)
             masks = masks.to(device)
-            _, mu, _ = model(inputs, mask=masks)
+            _, mu, _ = model(targets, mask=masks)
             train_latents.append(mu.cpu().numpy())
             train_indices.append(i)
     

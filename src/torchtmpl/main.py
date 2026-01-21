@@ -644,12 +644,13 @@ def train(config):
                 model.eval()
                 latents = []
                 with torch.no_grad():
-                    for i, (inputs, _, masks) in enumerate(valid_loader):
+                    for i, (inputs, targets, masks) in enumerate(valid_loader):
                         if i >= 1000:
                             break
-                        inputs = inputs.to(device)
+                        # Use targets (clean images) for latent visualization
+                        targets = targets.to(device)
                         masks = masks.to(device)
-                        _, mu, _ = model(inputs, mask=masks)
+                        _, mu, _ = model(targets, mask=masks)
                         latents.append(mu.cpu().numpy())
                 if latents:
                     latents = np.concatenate(latents, axis=0)
