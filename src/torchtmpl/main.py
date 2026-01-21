@@ -147,6 +147,35 @@ def _setup_tensorboard(config: dict, logdir: pathlib.Path):
     return None
 
 
+def _resolve_config_paths(config: dict, base_dir: pathlib.Path) -> dict:
+    """Convert relative paths in config to absolute paths."""
+    data_cfg = config.get("data", {})
+    
+    for key in ["data_dir", "archetypes_dir"]:
+        if key in data_cfg:
+            path = data_cfg[key]
+            if not os.path.isabs(path):
+                data_cfg[key] = str(base_dir / path)
+    
+    # Resolve test paths
+    test_cfg = config.get("test", {})
+    for key in ["test_input_dir", "test_output_dir", "model_path"]:
+        if key in test_cfg:
+            path = test_cfg[key]
+            if not os.path.isabs(path):
+                test_cfg[key] = str(base_dir / path)
+    
+    # Resolve interpolate paths
+    interpolate_cfg = config.get("interpolate", {})
+    for key in ["image1_path", "image2_path", "output_dir", "model_path"]:
+        if key in interpolate_cfg:
+            path = interpolate_cfg[key]
+            if not os.path.isabs(path):
+                interpolate_cfg[key] = str(base_dir / path)
+    
+    return config
+
+
 def _avg_ssim_on_loader(model, loader, device):
     ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
     total_ssim = 0.0
@@ -169,6 +198,13 @@ def _avg_ssim_on_loader(model, loader, device):
 
 
 def train(config):
+    # Set reproducibility
+    seed = config.get("data", {}).get("seed", 42)
+    utils.set_reproducibility(seed)
+    
+    # Resolve relative paths in config
+    config = _resolve_config_paths(config, pathlib.Path(__file__).parent.parent.parent)
+    
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda") if use_cuda else torch.device("cpu")
 

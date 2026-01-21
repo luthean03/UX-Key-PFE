@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from typing import Optional
 
 
 class MaskedGroupNorm(nn.Module):
@@ -293,7 +294,16 @@ class VAE(nn.Module):
         
         return recon
 
-    def forward(self, x, mask=None):
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Input validation
+        assert x.dim() == 4, f"Expected 4D input (B,C,H,W), got {x.dim()}D shape {x.shape}"
+        assert x.shape[1] == 1, f"Expected 1 channel, got {x.shape[1]}"
+        assert x.shape[0] > 0, "Batch size must be positive"
+        
+        if mask is not None:
+            assert mask.shape == x.shape, f"Mask shape {mask.shape} != input shape {x.shape}"
+            assert mask.dtype == torch.float32, f"Mask dtype should be float32, got {mask.dtype}"
+        
         orig_h, orig_w = x.shape[2], x.shape[3]
         
         # --- Encoder avec propagation du masque ---

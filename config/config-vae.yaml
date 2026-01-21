@@ -7,8 +7,8 @@
 resume: "logs/VAE_1/best_model.pt" 
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/vae_dataset_scaled"
-  archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
+  data_dir: "dataset/vae_dataset_scaled"
+  archetypes_dir: "dataset/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
   batch_size: 16                    # SmartBatchSampler groups similar-sized images to minimize padding
   num_workers: 8                 # Parallélisation I/O
   valid_ratio: 0.2               # 80/20 train/valid split
@@ -114,15 +114,15 @@ early_stopping:
 # Utilisé pour tester le modèle entraîné sur des images
 # Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml test
 test:
-  test_input_dir: "./test/test_input"          # Dossier contenant les images à tester
-  test_output_dir: "./test/test_output"        # Dossier pour enregistrer les résultats (grilles de comparaison)
+  test_input_dir: "test/test_input"          # Dossier contenant les images à tester
+  test_output_dir: "test/test_output"        # Dossier pour enregistrer les résultats (grilles de comparaison)
   model_path: "logs/VAE_0/last_model.pt" # Chemin vers le checkpoint du modèle entraîné
 # ==================== INTERPOLATION ====================
 # Interpolate between two images in latent space
 # Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml interpolate
 interpolate:
-  image1_path: "./test/test_input/wireframe_2930463_linear.png"  # Chemin à l'image 1
-  image2_path: "./test/test_input/wireframe_2983236_linear.png"  # Chemin à l'image 2
-  output_dir: "./test/interpolate_output"            # Dossier pour enregistrer la grille d'interpolation
+  image1_path: "test/test_input/wireframe_2930463_linear.png"  # Chemin à l'image 1
+  image2_path: "test/test_input/wireframe_2983236_linear.png"  # Chemin à l'image 2
+  output_dir: "test/interpolate_output"            # Dossier pour enregistrer la grille d'interpolation
   num_steps: 10                                 # Nombre de frames d'interpolation entre les deux images
   model_path: "logs/VAE_0/last_model.pt"       # Checkpoint du modèle entraîné

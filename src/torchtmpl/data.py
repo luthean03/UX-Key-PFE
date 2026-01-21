@@ -8,6 +8,7 @@ import torchvision.transforms as T
 import random
 import logging
 import numpy as np
+from typing import List, Optional
 
 Image.MAX_IMAGE_PIXELS = None 
 
@@ -79,9 +80,20 @@ class SmartBatchSampler(Sampler):
 
 
 class VariableSizeDataset(Dataset):
-    def __init__(self, root_dir, noise_level=0.0, max_height=2048, augment=False, files_list=None, 
-                 sp_prob=0.02, perspective_p=0.3, perspective_distortion_scale=0.08, random_erasing_prob=0.5,
-                 rotation_degrees=0, brightness_jitter=0.0, contrast_jitter=0.0):
+    def __init__(self, 
+        root_dir: str,
+        noise_level: float = 0.0,
+        max_height: int = 2048,
+        augment: bool = False,
+        files_list: Optional[List[str]] = None,
+        sp_prob: float = 0.02,
+        perspective_p: float = 0.3,
+        perspective_distortion_scale: float = 0.08,
+        random_erasing_prob: float = 0.5,
+        rotation_degrees: float = 0,
+        brightness_jitter: float = 0.0,
+        contrast_jitter: float = 0.0
+    ) -> None:
         self.root_dir = root_dir
         # Allow passing an explicit files list (used when splitting train/valid)
         if files_list is not None:
@@ -132,8 +144,19 @@ class VariableSizeDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
+        if not (0 <= idx < len(self.files)):
+            raise IndexError(f"Index {idx} out of range [0, {len(self.files)})")
+        
         img_path = os.path.join(self.root_dir, self.files[idx])
-        clean_image = Image.open(img_path).convert('L')
+        
+        # Validation
+        if not os.path.exists(img_path):
+            raise FileNotFoundError(f"Image not found: {img_path}")
+        
+        try:
+            clean_image = Image.open(img_path).convert('L')
+        except Exception as e:
+            raise RuntimeError(f"Failed to load image {img_path}: {e}")
         
         # === CROP pour éviter le OOM ===
         w, h = clean_image.size

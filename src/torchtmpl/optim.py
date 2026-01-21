@@ -55,12 +55,17 @@ def get_scheduler(optimizer, cfg: dict):
     
     logging.info(f"Using Scheduler: {name} with params {params}")
 
-    if name == "ReduceLROnPlateau":
-        return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **params)
-    if name == "CosineAnnealingLR":
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **params)
-    if name == "CosineAnnealingWarmRestarts":
-        return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, **params)
+    available_schedulers = {
+        "ReduceLROnPlateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
+        "CosineAnnealingLR": torch.optim.lr_scheduler.CosineAnnealingLR,
+        "CosineAnnealingWarmRestarts": torch.optim.lr_scheduler.CosineAnnealingWarmRestarts,
+    }
 
-    logging.warning(f"Unknown scheduler: {name} (scheduler disabled)")
-    return None
+    if name not in available_schedulers:
+        raise ValueError(
+            f"Unknown scheduler: {name}\n"
+            f"Available: {list(available_schedulers.keys())}"
+        )
+
+    scheduler_class = available_schedulers[name]
+    return scheduler_class(optimizer, **params)
