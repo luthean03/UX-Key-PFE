@@ -510,6 +510,10 @@ def train(config):
                     sample_masks = sample_masks.to(device)
                     sample_recon, _, _ = model(sample_inputs, mask=sample_masks)
                     
+                    sample_recon = sample_recon * sample_masks  # Zéros sur padding
+                    sample_inputs = sample_inputs * sample_masks  # Masquer l'input aussi
+                    sample_targets = sample_targets * sample_masks  # Cohérence
+                    
                     # Select first image in batch and crop to valid mask area
                     idx = 0
                     tgt = sample_targets[idx].cpu()  # (C, H, W)
