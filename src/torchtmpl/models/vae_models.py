@@ -168,11 +168,7 @@ class VAE(nn.Module):
         super(VAE, self).__init__()
         self.latent_dim = config.get("latent_dim", 128)
         self.spp_levels = [1, 2, 4]
-        
-        # AMÉLIORATION: Dropout configurable pour régularisation
         self.dropout_p = config.get("dropout_p", 0.0)
-        
-        # AMÉLIORATION: Skip Connections U-Net style
         self.use_skip_connections = config.get("use_skip_connections", False)
 
         # Encoder avec stockage des features intermédiaires
@@ -198,7 +194,7 @@ class VAE(nn.Module):
         self.dec_channels = 256
         self.fc_decode = nn.Linear(self.latent_dim, self.dec_channels * self.dec_h * self.dec_w)
 
-        # AMÉLIORATION: Decoder avec Skip Connections U-Net et Dropout2d
+        # Decoder architecture with optional skip connections and dropout
         self.dec_unflatten = nn.Unflatten(1, (self.dec_channels, self.dec_h, self.dec_w))
         
         if self.dropout_p > 0:

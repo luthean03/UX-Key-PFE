@@ -190,12 +190,8 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-# SLERP est centralisé dans utils.py
+# Import SLERP from centralized location
 from .utils import slerp_numpy as slerp
-
-
-# ⚠️  INTERPOLATION TENSORBOARD REMOVED
-# Use the dedicated interpolate() function in main.py instead
 
 
 def compute_latent_density_metrics(latents, n_neighbors=5):
@@ -337,10 +333,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             else:
                 logging.info(f"  Cluster {cluster_id}: ⚠️  Multiple archetypes: {', '.join(archs)}")
     
-    # ⚠️  INTERPOLATION TENSORBOARD REMOVED
-    # Use the dedicated interpolate() function in main.py instead
-    
-    # 7. Latent Density
+    # Compute latent density metrics
     density_metrics = compute_latent_density_metrics(train_latents, n_neighbors=5)
     for key, value in density_metrics.items():
         writer.add_scalar(f"latent/{key}", value, epoch)
@@ -354,9 +347,9 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         import matplotlib.cm as cm
         
         n_samples = len(train_latents)
-        perplexity = min(30.0, max(5.0, n_samples / 3))  # Heuristique: perplexity ≈ n_samples/3
+        perplexity = min(30.0, max(5.0, n_samples / 3))  # Adaptive perplexity based on sample size
         
-        # === GÉNÉRER PCA ET t-SNE ===
+        # Generate PCA and t-SNE visualizations
         logging.info(f"Generating PCA visualization...")
         pca = PCA(n_components=2, random_state=42)
         z_pca = pca.fit_transform(train_latents)

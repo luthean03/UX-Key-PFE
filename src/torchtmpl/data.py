@@ -112,8 +112,6 @@ class VariableSizeDataset(Dataset):
         self.perspective_p = float(perspective_p)
         self.perspective_distortion_scale = float(perspective_distortion_scale)
         self.random_erasing_prob = float(random_erasing_prob)
-        
-        # AMÉLIORATION: Nouvelles augmentations
         self.rotation_degrees = float(rotation_degrees)
         self.brightness_jitter = float(brightness_jitter)
         self.contrast_jitter = float(contrast_jitter)
@@ -158,20 +156,17 @@ class VariableSizeDataset(Dataset):
         except Exception as e:
             raise RuntimeError(f"Failed to load image {img_path}: {e}")
         
-        # === CROP pour éviter le OOM ===
+        # Crop images taller than max_height to prevent OOM
         w, h = clean_image.size
         if h > self.max_height:
-            # Train: crop aléatoire (regularization)
-            # Valid: crop déterministe (stabilité du monitoring / scheduler)
+            # Random crop for training (regularization), center crop for validation (reproducibility)
             if self.augment:
                 top = random.randint(0, h - self.max_height)
             else:
                 top = (h - self.max_height) // 2
-            # crop(left, top, right, bottom)
             clean_image = clean_image.crop((0, top, w, top + self.max_height))
-        # ======================================
         
-        # === 2. DATA AUGMENTATION (Seulement pour le train) ===
+        # Apply data augmentation (training only)
         if self.augment and self.augment_transform is not None:
             try:
                 clean_image = self.augment_transform(clean_image)
@@ -180,8 +175,7 @@ class VariableSizeDataset(Dataset):
 
         clean_tensor = TF.to_tensor(clean_image)
 
-        # === 3. BRUIT GAUSSIEN (Denoising - uniquement pour le train) ===
-        # Note: le bruit ne doit être appliqué que pendant l'entraînement, pas la validation
+        # Add Gaussian noise for denoising task (training only)
         if self.augment and self.noise_level > 0.0:
             noise = torch.randn_like(clean_tensor) * self.noise_level
             noisy_tensor = clean_tensor + noise
@@ -189,8 +183,7 @@ class VariableSizeDataset(Dataset):
         else:
             noisy_tensor = clean_tensor.clone()
 
-        # === 4. RANDOM ERASING (Appliqué SUR L'INPUT pour inpainting robustness) ===
-        # We apply RandomErasing to the noisy input only (recommended).
+        # Apply random erasing to input for inpainting robustness (training only)
         if self.augment and random.random() < self.random_erasing_prob:
             try:
                 eraser = T.RandomErasing(p=1.0, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0)
@@ -198,7 +191,7 @@ class VariableSizeDataset(Dataset):
             except Exception:
                 logging.debug("RandomErasing failed for %s", img_path)
 
-        # === 5. SALT-AND-PEPPER (Poivre & Sel) ===
+        # Apply salt-and-pepper noise (training only)
         if self.augment and self.sp_prob > 0.0 and random.random() < 0.5:
             try:
                 mask = torch.rand_like(noisy_tensor) < self.sp_prob
@@ -212,19 +205,19 @@ class VariableSizeDataset(Dataset):
         return noisy_tensor, clean_tensor
 
 def padded_masked_collate(batch):
+    """Assemble variable-size images into a batch with padding and binary masks.
+    
+    Returns:
+        tuple: (padded_inputs, padded_targets, masks)
     """
-    Assemble un batch d'images variables avec padding et masque binaire.
-    Retourne: (padded_images, padded_targets, masks)
-    """
-    # batch est une liste de tuples (noisy, clean) retournés par __getitem__
     inputs = [item[0] for item in batch]
     targets = [item[1] for item in batch]
 
-    # 1. Trouver les dimensions max du batch
+    # Find maximum dimensions in batch
     max_h = max([img.shape[1] for img in inputs])
     max_w = max([img.shape[2] for img in inputs])
 
-    # Arrondir au multiple de 32 supérieur (pour le VAE qui divise par 32)
+    # Round up to multiple of 32 (required by VAE architecture)
     stride = 32
     max_h = ((max_h + stride - 1) // stride) * stride
     max_w = ((max_w + stride - 1) // stride) * stride
@@ -275,8 +268,6 @@ def get_dataloaders(data_config, use_cuda):
     random_erasing_prob = float(data_config.get('random_erasing_prob', data_config.get('random_erasing_p', 0.5)))
     perspective_p = float(data_config.get('perspective_p', data_config.get('perspective_p', 0.3)))
     perspective_distortion_scale = float(data_config.get('perspective_distortion_scale', 0.08))
-    
-    # AMÉLIORATION: Nouvelles augmentations
     rotation_degrees = float(data_config.get('rotation_degrees', 0))
     brightness_jitter = float(data_config.get('brightness_jitter', 0.0))
     contrast_jitter = float(data_config.get('contrast_jitter', 0.0))

@@ -353,7 +353,7 @@ def train(config):
         grad_accumulation_steps = int(optim_conf.get("accumulation_steps", int(config.get("grad_accumulation_steps", 64))))
         logging.info(f"Training with Gradient Accumulation Steps: {grad_accumulation_steps}")
         
-        # AMÉLIORATION: Mixed Precision Training (AMP)
+        # Setup mixed precision training if enabled
         use_amp = bool(optim_conf.get("mixed_precision", False)) and use_cuda
         if use_amp:
             from torch.cuda.amp import autocast, GradScaler
@@ -395,12 +395,12 @@ def train(config):
             train_recon_total = 0.0
             train_kld_total = 0.0
             
-            # Récupère config Mixup/CutMix
+            # Mixup/CutMix configuration
             use_mixup = optim_conf.get("use_mixup", False)
             use_cutmix = optim_conf.get("use_cutmix", False)
             mixup_alpha = optim_conf.get("mixup_alpha", 0.2)
             cutmix_alpha = optim_conf.get("cutmix_alpha", 1.0)
-            mix_prob = optim_conf.get("mix_prob", 0.5)  # Probabilité d'appliquer mix
+            mix_prob = optim_conf.get("mix_prob", 0.5)
             
             pbar = tqdm(train_loader, desc=f"Epoch {e}/{config['nepochs']}", dynamic_ncols=True)
             for i, (inputs, targets, masks) in enumerate(pbar):
@@ -408,7 +408,7 @@ def train(config):
                 targets = targets.to(device)
                 masks = masks.to(device)
                 
-                # AMÉLIORATION: Apply Mixup/CutMix avec probabilité
+                # Apply Mixup/CutMix augmentation if enabled
                 apply_mix = (use_mixup or use_cutmix) and np.random.rand() < mix_prob
                 if apply_mix:
                     if use_mixup and (not use_cutmix or np.random.rand() < 0.5):
@@ -416,7 +416,7 @@ def train(config):
                     elif use_cutmix:
                         inputs, targets, masks, lam = cutmix_data(inputs, targets, cutmix_alpha, mask=masks)
                 
-                # AMÉLIORATION: Forward pass avec AMP si activé
+                # Forward pass with automatic mixed precision if enabled
                 if use_amp:
                     with autocast():
                         recon, mu, logvar = model(inputs, mask=masks)
@@ -615,7 +615,7 @@ def train(config):
                 except Exception:
                     pass
             
-            # AMÉLIORATION: Métriques d'espace latent (configurable)
+            # Compute latent space metrics if configured
             tsne_cfg = logging_config.get("latent_visualization", {}) if isinstance(logging_config, dict) else {}
             tsne_every = int(tsne_cfg.get("frequency", 10))
             tsne_max_samples = int(tsne_cfg.get("max_samples", 1000))
