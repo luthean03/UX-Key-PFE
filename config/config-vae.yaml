@@ -1,128 +1,123 @@
-# ==================== CONFIG VAE AMÉLIORÉ ====================
-# Date: 5 janvier 2026
-# Améliorations: Anti-overfitting, régularisation accrue, augmentations renforcées
+# VAE Configuration
 
-# === RESUME TRAINING (Optionnel) ===
-# Chemin vers un checkpoint (.pt) pour reprendre l'entraînement
+# Resume training from checkpoint (optional)
 resume: "logs/VAE_2/best_model.pt" 
 
 data:
   data_dir: "dataset/vae_dataset_scaled"
-  archetypes_dir: "dataset/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
+  archetypes_dir: "dataset/archetypes_png_scaled"  # Labeled wireframes for latent metrics
   batch_size: 16                    # SmartBatchSampler groups similar-sized images to minimize padding
-  num_workers: 8                 # Parallélisation I/O
-  valid_ratio: 0.2               # 80/20 train/valid split
-  seed: 42                       # Reproductibilité
+  num_workers: 8                    # I/O parallelization
+  valid_ratio: 0.2                  # 80/20 train/valid split
+  seed: 42                          # Reproducibility
   
-  # Gestion mémoire
-  max_height: 3000               # Limite hauteur (crop si dépasse)
+  # Memory management
+  max_height: 3000                  # Maximum height (crop if exceeded)
   
-  # === DENOISING (Augmenté pour robustesse) ===
-  noise_level: 0.20              # était: 0.15 → +33% bruit gaussien
+  # Denoising augmentation
+  noise_level: 0.20                 # Gaussian noise level for robustness
   
-  # === AUGMENTATIONS (Renforcées contre overfitting) ===
+  # Data augmentation (applied to training only)
   augment: true
-  sp_prob: 0.04                  # était: 0.02 → x2 salt-and-pepper
-  random_erasing_prob: 0.35      # était: 0.2 → +75% masking
-  perspective_p: 0.3             # Perspective transform (inchangé)
-  perspective_distortion_scale: 0.12  # était: 0.08 → +50% distortion
+  sp_prob: 0.04                     # Salt-and-pepper noise probability
+  random_erasing_prob: 0.35         # Random masking probability
+  perspective_p: 0.3                # Perspective transform probability
+  perspective_distortion_scale: 0.12  # Perspective distortion magnitude
   
-  # === NOUVELLES AUGMENTATIONS ===
-  rotation_degrees: 5            # Rotation légère ±5°
-  brightness_jitter: 0.1         # Variation luminosité ±10%
-  contrast_jitter: 0.1           # Variation contraste ±10%
+  # Additional augmentations
+  rotation_degrees: 5               # Random rotation range (±5°)
+  brightness_jitter: 0.1            # Brightness variation (±10%)
+  contrast_jitter: 0.1              # Contrast variation (±10%)
 
-# ==================== MODEL ====================
+# Model architecture
 model:
   name: "vae"
-  class: "VAE"                   # Doit correspondre à vae_models.py
-  latent_dim: 128                # Dimension espace latent
-  input_channels: 1              # Grayscale
-  dropout_p: 0.1                 # Dropout dans decoder (réduit pour VAE pur)
-  # use_skip_connections: false  # DÉSACTIVÉ: cause posterior collapse dans un VAE
-                                 # (le décodeur "triche" en regardant les pixels d'entrée)
+  class: "VAE"                   # Must match class in vae_models.py
+  latent_dim: 128                # Latent space dimensionality
+  input_channels: 1              # Grayscale images
+  dropout_p: 0.1                 # Dropout in decoder
+  # use_skip_connections: false  # Skip connections disabled (can cause posterior collapse in VAE)
 
-# ==================== LOSS (Optimisé pour espace latent STRUCTURÉ) ====================
+# Loss configuration
 # Options: 'l1', 'mse', 'perceptual'
-# 'perceptual' = L1 + SSIM + Gradient + Multi-scale (recommandé pour wireframes)
+# 'perceptual' = L1 + SSIM + Gradient + Multi-scale (recommended for wireframes)
 #
-# NORMALISATION STANDARD VAE:
+# Standard VAE normalization:
 # - recon_loss: SUM over all pixels (~50,000 for 1M pixels)
 # - kld_loss: SUM over dims, MEAN over batch (~20-50 typically)
 #
 # With sum reduction: reconstruction naturally dominates by ~1000x
 # Therefore beta_kld = 1.0 restores proper balance without posterior collapse
 loss:
-  name: "l1"                     # 'l1', 'mse', ou 'perceptual'
+  name: "l1"                     # 'l1', 'mse', or 'perceptual'
   beta_kld: 1.0                  # Using sum reduction: naturally balanced at 1.0
-  loss_scale: 1                  # Pas de scaling (valeurs naturelles pour debug)
-  warmup_epochs: 0              # KLD warmup progressif (évite posterior collapse au début)
+  loss_scale: 1                  # No scaling (natural values for debugging)
+  warmup_epochs: 0               # KLD warmup epochs (prevents early posterior collapse)
   
-  # Poids des composantes (uniquement pour name='perceptual')
-  lambda_l1: 1.0                 # Précision pixel (reconstruction fidèle)
-  lambda_ssim: 0.5               # Similarité structurelle (layouts, blocs)
-  lambda_gradient: 0.1           # Préservation des bords (lignes, contours)
-  lambda_multiscale: 0.2         # Hiérarchie spatiale (global + détails)
-  use_multiscale: true           # Activer loss multi-échelle
+  # Component weights (only used when name='perceptual')
+  lambda_l1: 1.0                 # Pixel accuracy
+  lambda_ssim: 0.5               # Structural similarity
+  lambda_gradient: 0.1           # Edge preservation
+  lambda_multiscale: 0.2         # Multi-scale hierarchical features
+  use_multiscale: true           # Enable multi-scale loss
 
-# ==================== OPTIMIZER (Démarrage plus conservateur) ====================
+# Optimizer configuration
 optim:
   algo: "AdamW"
   params:
-    lr: 0.0003                   # Learning rate initial
-    weight_decay: 0.0001         # Régularisation L2
+    lr: 0.0003                   # Initial learning rate
+    weight_decay: 0.0001         # L2 regularization
   
-  # === SCHEDULER (CosineAnnealingWarmRestarts pour cycles d'apprentissage) ===
+  # Learning rate scheduler
   scheduler:
     name: "CosineAnnealingWarmRestarts"
     params:
-      T_0: 10                   # Redémarre tous les 100 epochs
-      T_mult: 2                  # Double la période après chaque restart
-      eta_min: 0.000003          # LR minimum (plancher)
+      T_0: 10                    # Restart every 10 epochs
+      T_mult: 2                  # Double period after each restart
+      eta_min: 0.000003          # Minimum learning rate
       verbose: true
 
-# ==================== TRAINING OPTIMIZATION ====================
-# NOTE: lr et weight_decay sont définis dans optim.params (source unique de vérité)
+# Training optimization
+# Note: lr and weight_decay are defined in optim.params
 optimization:
   accumulation_steps: 4          # Gradient accumulation (effective batch = batch_size * accumulation_steps)
-  mixed_precision: true          # AMP pour vitesse + mémoire
+  mixed_precision: true          # Automatic mixed precision for speed and memory
 
-# ==================== LOGGING ====================
+# Logging configuration
 logging:
   logdir: "./logs"
   tensorboard: true
-  log_loss_components: true      # Log SSIM/gradient/KLD séparément
+  log_loss_components: true      # Log SSIM/gradient/KLD separately
   save_reconstructions_every: 5
   latent_visualization:
-    frequency: 20                # t-SNE tous les 20 epochs
+    frequency: 20                # t-SNE visualization every 20 epochs
     max_samples: 500
   # wandb:
   #   project: "ux-vae-improved"
   #   entity: "your-team"
 
-# ==================== TRAINING ====================
+# Training configuration
 nepochs: 100
 
-# ==================== EARLY STOPPING ====================
+# Early stopping
 early_stopping:
   enabled: true
-  monitor: "test_SSIM"           # Métrique surveillée (ou "test_ELBO")
-  mode: "max"                    # max pour SSIM, min pour ELBO
-  patience: 20                   # Arrête si pas d'amélioration 20 epochs
-  min_delta: 0.0001              # Amélioration minimale considérée
-# ==================== TEST (Inference) ====================
-# Utilisé pour tester le modèle entraîné sur des images
-# Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml test
+  monitor: "test_SSIM"           # Monitored metric (or "test_ELBO")
+  mode: "max"                    # 'max' for SSIM, 'min' for ELBO
+  patience: 20                   # Stop if no improvement for 20 epochs
+  min_delta: 0.0001              # Minimum improvement threshold
+# Test (inference) configuration
+# Usage: python -m src.torchtmpl.main config/config-vae.yaml test
 test:
-  test_input_dir: "test/test_input"          # Dossier contenant les images à tester
-  test_output_dir: "test/test_output"        # Dossier pour enregistrer les résultats (grilles de comparaison)
-  model_path: "logs/VAE_0/last_model.pt" # Chemin vers le checkpoint du modèle entraîné
-# ==================== INTERPOLATION ====================
-# Interpolate between two images in latent space
-# Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml interpolate
+  test_input_dir: "test/test_input"          # Directory containing test images
+  test_output_dir: "test/test_output"        # Output directory for comparison grids
+  model_path: "logs/VAE_0/last_model.pt"     # Path to trained model checkpoint
+
+# Interpolation configuration
+# Usage: python -m src.torchtmpl.main config/config-vae.yaml interpolate
 interpolate:
-  image1_path: "test/test_input/wireframe_2930463_linear.png"  # Chemin à l'image 1
-  image2_path: "test/test_input/wireframe_2983236_linear.png"  # Chemin à l'image 2
-  output_dir: "test/interpolate_output"            # Dossier pour enregistrer la grille d'interpolation
-  num_steps: 10                                 # Nombre de frames d'interpolation entre les deux images
-  model_path: "logs/VAE_0/last_model.pt"       # Checkpoint du modèle entraîné
+  image1_path: "test/test_input/wireframe_2930463_linear.png"  # First image path
+  image2_path: "test/test_input/wireframe_2983236_linear.png"  # Second image path
+  output_dir: "test/interpolate_output"            # Output directory for interpolation grid
+  num_steps: 10                                     # Number of interpolation steps
+  model_path: "logs/VAE_0/last_model.pt"           # Path to trained model checkpoint

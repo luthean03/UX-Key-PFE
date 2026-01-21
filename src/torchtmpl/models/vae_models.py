@@ -25,28 +25,28 @@ class MaskedGroupNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
 
     def forward(self, x, mask):
-        # Si pas de masque, comportement standard
+        # If no mask, standard behavior
         if mask is None:
-            # F.group_norm attend un poids de taille (C,), pas (1, C, 1, 1)
+            # F.group_norm expects weight of size (C,), not (1, C, 1, 1)
             return F.group_norm(x, self.num_groups, self.weight.squeeze(), self.bias.squeeze(), self.eps)
 
         B, C, H, W = x.shape
         G = self.num_groups
         
-        # Reshape pour séparer les groupes
+        # Reshape to separate groups
         x_g = x.view(B, G, C // G, H, W)
-        mask_g = mask.view(B, 1, 1, H, W) # Broadcast sur les groupes
+        mask_g = mask.view(B, 1, 1, H, W)  # Broadcast over groups
 
-        # Moyenne pondérée (somme / compte)
+        # Weighted mean (sum / count)
         x_sum = (x_g * mask_g).sum(dim=[2, 3, 4], keepdim=True)
         mask_sum = mask_g.expand_as(x_g).sum(dim=[2, 3, 4], keepdim=True)
         mean = x_sum / (mask_sum + self.eps)
 
-        # Variance pondérée
+        # Weighted variance
         var_sum = ((x_g - mean).pow(2) * mask_g).sum(dim=[2, 3, 4], keepdim=True)
         var = var_sum / (mask_sum + self.eps)
 
-        # Normalisation + Affine
+        # Normalization + Affine transform
         x_norm = (x_g - mean) / torch.sqrt(var + self.eps)
         x_norm = x_norm.view(B, C, H, W) * mask
         
@@ -62,7 +62,7 @@ class MaskedSPPLayer(nn.Module):
         batch_size = x.size(0)
         features = []
         
-        # Appliquer masque pour sécurité (zéros parfaits sur padding)
+        # Apply mask for safety (perfect zeros on padding)
         if mask is not None:
             x = x * mask
         
@@ -70,11 +70,11 @@ class MaskedSPPLayer(nn.Module):
             if mask is None:
                 pool = F.adaptive_avg_pool2d(x, (size, size))
             else:
-                # Moyenne masquée adaptative
+                # Adaptive masked average
                 x_sum = F.adaptive_avg_pool2d(x, (size, size)) 
                 mask_sum = F.adaptive_avg_pool2d(mask, (size, size))
-                # x_sum est en fait Moyenne(x), mask_sum est Moyenne(mask)
-                # Le ratio corrige la dilution par les zéros
+                # x_sum is actually Mean(x), mask_sum is Mean(mask)
+                # The ratio corrects for dilution by zeros
                 pool = x_sum / (mask_sum + 1e-6)
                 
             features.append(pool.view(batch_size, -1))
@@ -141,8 +141,8 @@ class ResidualBlock(nn.Module):
 
         out = self.conv1(x)
         
-        # Préparer le masque pour la sortie (peut avoir rétréci si stride > 1)
-        # Note: ceci devient le masque actif pour out, gn1, conv2, gn2
+        # Prepare mask for output (may have shrunk if stride > 1)
+        # Note: this becomes the active mask for out, gn1, conv2, gn2
         mask_out = mask
         if mask is not None and mask.shape[2:] != out.shape[2:]:
             mask_out = F.interpolate(mask, size=out.shape[2:], mode='nearest')
@@ -157,7 +157,7 @@ class ResidualBlock(nn.Module):
         identity = x
         if self.use_projection:
             identity = self.shortcut_conv(identity)
-            # shortcut_conv a le même stride que conv1, donc la sortie a la taille de mask_out
+            # shortcut_conv has same stride as conv1, so output has size of mask_out
             identity = self.shortcut_gn(identity, mask_out) 
             
         out += identity

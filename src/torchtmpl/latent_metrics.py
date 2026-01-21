@@ -88,8 +88,8 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
 
                 latents.append(mu.cpu().numpy())
                 labels.append(idx)
-                # Save tuple: (padded_image_cpu, mask_cpu, orig_h, orig_w)
-                images.append((padded.cpu(), mask.cpu(), h, w))  # Sauvegarder l'image et son masque
+                # Store padded image, mask, and original dimensions
+                images.append((padded.cpu(), mask.cpu(), h, w))
                 
             except Exception as e:
                 logging.warning(f"Failed to load {img_path.name}: {e}")
@@ -324,11 +324,11 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         for cluster_id in range(k):
             archs = cluster_to_archetypes.get(cluster_id, [])
             if len(archs) == 0:
-                logging.info(f"  Cluster {cluster_id}: ❌ No archetype assigned")
+                logging.info(f"  Cluster {cluster_id}: [X] No archetype assigned")
             elif len(archs) == 1:
-                logging.info(f"  Cluster {cluster_id}: ✅ {archs[0]}")
+                logging.info(f"  Cluster {cluster_id}: [OK] {archs[0]}")
             else:
-                logging.info(f"  Cluster {cluster_id}: ⚠️  Multiple archetypes: {', '.join(archs)}")
+                logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
     
     # Compute latent density metrics
     density_metrics = compute_latent_density_metrics(train_latents, n_neighbors=5)
@@ -410,11 +410,11 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             ax.grid(True, alpha=0.3)
             
             plt.tight_layout()
-            # Sauvegarder dans TensorBoard avec un tag différent pour chaque méthode
+            # Save to TensorBoard with method-specific tag
             tag = "latent/pca_train_kmeans" if viz_method == "PCA" else "latent/tsne_train_kmeans"
             writer.add_figure(tag, fig, epoch)
             plt.close(fig)
-            logging.info(f"✅ {viz_method} visualization saved to TensorBoard")
+            logging.info(f"[OK] {viz_method} visualization saved to TensorBoard")
         
     except Exception as e:
         logging.warning(f"Visualization failed: {e}")

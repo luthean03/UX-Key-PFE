@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import math
 
 
-# ===================== SSIM LOSS =====================
+# SSIM Loss Implementation
 def gaussian_kernel(size: int, sigma: float, device: torch.device) -> torch.Tensor:
     """Create a 2D Gaussian kernel."""
     coords = torch.arange(size, dtype=torch.float32, device=device)
@@ -87,7 +87,7 @@ class SSIMLoss(nn.Module):
         return loss
 
 
-# ===================== GRADIENT LOSS =====================
+# Gradient Loss Implementation
 class GradientLoss(nn.Module):
     """Edge-preserving loss using Sobel gradients.
     
@@ -125,7 +125,7 @@ class GradientLoss(nn.Module):
         return diff.sum()
 
 
-# ===================== MULTI-SCALE LOSS =====================
+# Multi-Scale Loss Implementation
 class MultiScaleLoss(nn.Module):
     """Multi-scale reconstruction loss for capturing both global layout and fine details.
     
@@ -199,13 +199,13 @@ class SimpleVAELoss(nn.Module):
         self.scale = scale
 
     def forward(self, recon_x, x, mu, logvar, mask=None):
-        # Force FP32 pour la précision
+        # Force FP32 for precision
         recon_x = recon_x.float()
         x = x.float()
         
         B, C, H, W = x.shape
         
-        # === RECONSTRUCTION LOSS (SUM over all pixels) ===
+        # Reconstruction loss (sum over all pixels)
         # Changed from mean to sum to restore natural balance:
         # - With sum: recon ~50,000 for 1M pixels, kld ~20 for 128 dims
         # - With beta=1: total ~50,020, recon naturally dominates
@@ -225,29 +225,29 @@ class SimpleVAELoss(nn.Module):
         else:
             raise ValueError(f"Unknown recon loss mode: {self.mode}")
 
-        # === KLD LOSS (standard VAE: sum over latent dims, mean over batch) ===
+        # KL Divergence loss (standard VAE: sum over latent dims, mean over batch)
         # Formula: -0.5 * sum_j(1 + logvar_j - mu_j^2 - exp(logvar_j))
-        # La somme sur les dimensions est STANDARD pour un VAE.
-        # On moyenne sur le batch pour avoir une loss indépendante de batch_size.
+        # Sum over dimensions is STANDARD for VAE.
+        # Average over batch for loss independent of batch_size.
         mu = mu.float()
         logvar = logvar.float()
         
-        # KLD: somme sur dimensions latentes, moyenne sur batch
+        # KLD: sum over latent dimensions, mean over batch
         kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)  # (B,)
-        kld_loss = kld_per_sample.mean()  # Moyenne sur batch
+        kld_loss = kld_per_sample.mean()  # Average over batch
         
-        # === TOTAL LOSS ===
+        # Total loss
         # Reconstruction (sum over pixels) naturally dominates KLD (mean over batch over dims)
         # E.g., recon ~50,000 vs kld ~20 → reconstruction is forced to be accurate
         total = recon_loss + (self.beta * kld_loss)
         
-        # Scale pour affichage (ne change pas les gradients relatifs)
+        # Scale for display (does not change relative gradients)
         total_scaled = total * self.scale
         
         return total_scaled, recon_loss, kld_loss
 
 
-# ===================== PERCEPTUAL VAE LOSS =====================
+# Perceptual VAE Loss Implementation
 class PerceptualVAELoss(nn.Module):
     """Advanced VAE loss with perceptual components for structure preservation.
     
@@ -258,8 +258,8 @@ class PerceptualVAELoss(nn.Module):
     - Multi-scale loss (hierarchical features, normalized)
     - KL divergence (sum over dims, mean over batch - standard VAE)
     
-    IMPORTANT: La KLD est typ. ~50-200 (pour latent_dim=128), donc beta doit
-    être petit (~0.0001-0.001) pour équilibrer avec recon_loss (~0.05).
+    Note: KLD is typically ~50-200 (for latent_dim=128), so beta should
+    be small (~0.0001-0.001) to balance with recon_loss (~0.05).
     """
     
     def __init__(self, beta: float = 1.0,
@@ -317,7 +317,7 @@ class PerceptualVAELoss(nn.Module):
         
         # 5. KL Divergence (standard: sum over dims, mean over batch)
         kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)  # (B,)
-        kld_loss = kld_per_sample.mean()  # Mean over batch
+        kld_loss = kld_per_sample.mean()  # Average over batch
         
         total = recon_loss + (self.beta * kld_loss)
         
@@ -327,7 +327,7 @@ class PerceptualVAELoss(nn.Module):
         return total_scaled, recon_loss, kld_loss
 
 
-# ===================== LATENT REGULARIZATION =====================
+# Latent Regularization Implementation
 class LatentRegularization(nn.Module):
     """Additional latent space regularization for structured clustering.
     
@@ -356,7 +356,7 @@ class LatentRegularization(nn.Module):
         return self.lambda_dim_kl * self.dimension_kl(mu, logvar)
 
 
-# ===================== FACTORY =====================
+# Factory function
 def get_vae_loss(loss_config: dict):
     """Factory: instantiate a loss module from config.
 

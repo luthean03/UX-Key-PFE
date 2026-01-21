@@ -6,7 +6,7 @@ import sys
 import subprocess
 import tempfile
 import shlex
-import yaml # Ajout
+import yaml
 
 
 def makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, extra_args: str = ""):
@@ -33,32 +33,32 @@ echo "Copying the source directory"
 date
 mkdir -p $TMPDIR/code
 
-# Copie du code sur le noeud local pour I/O rapide (exclure logs/datasets lourds)
+# Copy source code to local node for fast I/O (exclude heavy logs/datasets)
 rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude 'vae_dataset*' . $TMPDIR/code
 
-# Copie des archetypes et dataset uniquement pour training
+# Copy archetypes and dataset only for training
 if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then
-    # Copie des archetypes pour métriques latentes (depuis le path YAML)
+    # Copy archetypes for latent metrics (from YAML config path)
     SRC_ARCHETYPES="{archetypes_src}"
-    # Gérer paths relatifs (relative au dossier d'exécution)
+    # Handle relative paths (relative to execution directory)
     if [[ "$SRC_ARCHETYPES" != /* ]]; then
         SRC_ARCHETYPES="$current_dir/$SRC_ARCHETYPES"
     fi
     if [[ -d "$SRC_ARCHETYPES" ]]; then
-        echo "✅ Copying archetypes from $SRC_ARCHETYPES to node..."
+        echo "[OK] Copying archetypes from $SRC_ARCHETYPES to node..."
         rsync -r "$SRC_ARCHETYPES/" "$TMPDIR/code/archetypes_png/"
-        echo "✅ Archetypes copied: $(ls $TMPDIR/code/archetypes_png | wc -l) files"
+        echo "[OK] Archetypes copied: $(ls $TMPDIR/code/archetypes_png | wc -l) files"
     fi
 
-    # Copie du dataset d'entraînement sur le nœud (depuis le path YAML)
+    # Copy training dataset to node (from YAML config path)
     SRC_DATA="{data_src}"
     if [[ "$SRC_DATA" != /* ]]; then
         SRC_DATA="$current_dir/$SRC_DATA"
     fi
     if [[ -d "$SRC_DATA" ]]; then
-        echo "✅ Copying training dataset to node from $SRC_DATA..."
+        echo "[OK] Copying training dataset to node from $SRC_DATA..."
         rsync -r "$SRC_DATA/" "$TMPDIR/code/vae_dataset/"
-        echo "✅ Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
+        echo "[OK] Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
     fi
 else
     echo "Skipping dataset/archetypes copy (not needed for {command})"
@@ -78,10 +78,10 @@ python -m pip install 'numpy<2'
 python -m pip install --index-url https://download.pytorch.org/whl/cu118 --extra-index-url https://pypi.org/simple \
     torch==2.1.2+cu118 torchvision==0.16.2+cu118
 
-# Installe le projet + scikit-learn/matplotlib/etc via pyproject.toml
+# Install project and dependencies via pyproject.toml
 python -m pip install .
 
-# === MODIF 2 : Gestion Mémoire VAE ===
+# Configure PyTorch memory allocator for improved efficiency
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Recreate the config file inside $TMPDIR
@@ -112,52 +112,52 @@ if logdir:
         logging_cfg['logdir'] = str(base / logdir_path)
         cfg['logging'] = logging_cfg
 
-# Patch data dir (Utilise dataset local sur noeud si disponible)
+# Patch data dir (use local node dataset if available)
 data_cfg = cfg.get('data') or dict()
 data_dir = data_cfg.get('data_dir')
 if data_dir:
     dd_path = pathlib.Path(data_dir).expanduser()
-    # Priorité 1: Dataset local sur le noeud ($TMPDIR/code/vae_dataset)
+    # Priority 1: Local dataset on node ($TMPDIR/code/vae_dataset)
     local_dataset = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'vae_dataset'
     if local_dataset.exists():
         data_cfg['data_dir'] = str(local_dataset)
-        print(f"✅ Using local dataset on node: {{local_dataset}}")
-    # Priorité 2: Chemin absolu (shared filesystem - plus lent)
+        print(f"[OK] Using local dataset on node: {{local_dataset}}")
+    # Priority 2: Absolute path (shared filesystem - slower)
     elif dd_path.is_absolute():
         data_cfg['data_dir'] = str(dd_path)
-        print(f"⚠️  Using shared filesystem (slower): {{dd_path}}")
-    # Priorité 3: Chemin relatif depuis le dossier de lancement
+        print(f"[!] Using shared filesystem (slower): {{dd_path}}")
+    # Priority 3: Relative path from launch directory
     else:
         data_cfg['data_dir'] = str(base / dd_path)
-        print(f"⚠️  Using shared filesystem (slower): {{base / dd_path}}")
+        print(f"[!] Using shared filesystem (slower): {{base / dd_path}}")
     cfg['data'] = data_cfg
 
-# Patch archetypes dir (même logique que dataset)
+# Patch archetypes dir (same logic as dataset)
 archetypes_dir = data_cfg.get('archetypes_dir')
 if archetypes_dir:
     arch_path = pathlib.Path(archetypes_dir).expanduser()
-    # Priorité 1: Archetypes locaux sur le noeud
+    # Priority 1: Local archetypes on node
     local_archetypes = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'archetypes_png'
     if local_archetypes.exists():
         data_cfg['archetypes_dir'] = str(local_archetypes)
-        print(f"✅ Using local archetypes on node: {{local_archetypes}}")
-    # Priorité 2: Chemin absolu (shared filesystem)
+        print(f"[OK] Using local archetypes on node: {{local_archetypes}}")
+    # Priority 2: Absolute path (shared filesystem)
     elif arch_path.is_absolute():
         data_cfg['archetypes_dir'] = str(arch_path)
-        print(f"⚠️  Using shared filesystem archetypes: {{arch_path}}")
-    # Priorité 3: Chemin relatif
+        print(f"[!] Using shared filesystem archetypes: {{arch_path}}")
+    # Priority 3: Relative path
     else:
         data_cfg['archetypes_dir'] = str(base / arch_path)
-        print(f"⚠️  Using shared filesystem archetypes: {{base / arch_path}}")
+        print(f"[!] Using shared filesystem archetypes: {{base / arch_path}}")
     cfg['data'] = data_cfg
 
-# Patch resume checkpoint (NOUVEAU)
+# Patch resume checkpoint path
 resume_path = cfg.get('resume')
 if resume_path:
     r_path = pathlib.Path(resume_path).expanduser()
     if not r_path.is_absolute():
         cfg['resume'] = str(base / r_path)
-        print(f"✅ Patched resume path to absolute: {{cfg['resume']}}")
+        print(f"[OK] Patched resume path to absolute: {{cfg['resume']}}")
 
 # Patch test checkpoint
 test_cfg = cfg.get('test') or dict()
@@ -174,7 +174,7 @@ PY
 
 if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then
     echo "Training"
-    # Lancement avec la config patchée
+    # Launch with patched config
     python3 -m torchtmpl.main "$job_config" train
 
     if [[ $? != 0 ]]; then
@@ -190,8 +190,8 @@ if [[ "{command}" == "test" || "{command}" == "train_test" ]]; then
         exit -1
     fi
     
-    # === COPIE DES RÉSULTATS DU TEST EN RETOUR ===
-    # Récupérer le chemin de sortie du test depuis la config
+    # Copy test results back to shared filesystem
+    # Extract test output directory from config
     TEST_OUTPUT_DIR=$(python3 -c "
 import yaml
 import pathlib
@@ -200,14 +200,14 @@ test_output = cfg.get('test', {{}}).get('test_output_dir', './test_output')
 print(test_output)
 ")
     
-    # Copier les résultats du test du nœud vers le dossier partagé
+    # Copy results from compute node to shared directory
     if [[ -d "$TEST_OUTPUT_DIR" ]]; then
-        echo "✅ Copying test results back to shared filesystem..."
-        # Créer le dossier de destination s'il n'existe pas
+        echo "[OK] Copying test results back to shared filesystem..."
+        # Create destination folder if not exists
         mkdir -p "$current_dir/$TEST_OUTPUT_DIR"
-        # Copier les fichiers PNG de comparaison
+        # Copy comparison PNG files
         rsync -r "$TEST_OUTPUT_DIR/" "$current_dir/$TEST_OUTPUT_DIR/" 2>/dev/null || true
-        echo "✅ Test results copied to: $current_dir/$TEST_OUTPUT_DIR"
+        echo "[OK] Test results copied to: $current_dir/$TEST_OUTPUT_DIR"
         echo "   Found $(ls $current_dir/$TEST_OUTPUT_DIR/*.png 2>/dev/null | wc -l) comparison images"
     fi
 fi
@@ -220,8 +220,8 @@ if [[ "{command}" == "interpolate" || "{command}" == "train_test" ]]; then
         exit -1
     fi
     
-    # === COPIE DES RÉSULTATS D'INTERPOLATION EN RETOUR ===
-    # Récupérer le chemin de sortie depuis la config
+    # Copy interpolation results back to shared filesystem
+    # Extract interpolation output directory from config
     INTERP_OUTPUT_DIR=$(python3 -c "
 import yaml
 import pathlib
@@ -230,14 +230,14 @@ interp_output = cfg.get('interpolate', {{}}).get('output_dir', './interpolate_ou
 print(interp_output)
 ")
     
-    # Copier les résultats du nœud vers le dossier partagé
+    # Copy results from compute node to shared directory
     if [[ -d "$INTERP_OUTPUT_DIR" ]]; then
-        echo "✅ Copying interpolation results back to shared filesystem..."
-        # Créer le dossier de destination s'il n'existe pas
+        echo "[OK] Copying interpolation results back to shared filesystem..."
+        # Create destination folder if not exists
         mkdir -p "$current_dir/$INTERP_OUTPUT_DIR"
-        # Copier les fichiers PNG d'interpolation
+        # Copy interpolation PNG files
         rsync -r "$INTERP_OUTPUT_DIR/" "$current_dir/$INTERP_OUTPUT_DIR/" 2>/dev/null || true
-        echo "✅ Interpolation results copied to: $current_dir/$INTERP_OUTPUT_DIR"
+        echo "[OK] Interpolation results copied to: $current_dir/$INTERP_OUTPUT_DIR"
         echo "   Found $(ls $current_dir/$INTERP_OUTPUT_DIR/*.png 2>/dev/null | wc -l) interpolation grids"
     fi
 fi

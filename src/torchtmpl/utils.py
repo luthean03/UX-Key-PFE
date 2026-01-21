@@ -11,7 +11,7 @@ import torch.nn
 import tqdm
 
 
-# ===================== Reproducibility =====================
+# Reproducibility utilities
 def set_reproducibility(seed: int) -> None:
     """Set random seeds for reproducibility across numpy, torch, and CUDA.
     
@@ -28,7 +28,7 @@ def set_reproducibility(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-# ===================== SLERP (Centralisé) =====================
+# SLERP (Spherical Linear Interpolation)
 def slerp_numpy(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
     """Spherical Linear Interpolation (SLERP) between two latent codes (numpy).
     

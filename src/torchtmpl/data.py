@@ -104,7 +104,7 @@ class VariableSizeDataset(Dataset):
                 self.files = [f for f in os.listdir(root_dir) if f.lower().endswith('.png')]
 
         self.noise_level = float(noise_level)
-        self.max_height = int(max_height) # Hauteur max autorisée (ex: 2048 px)
+        self.max_height = int(max_height)  # Maximum allowed height (e.g., 2048 px)
         self.augment = bool(augment)
         self.sp_prob = float(sp_prob)
 
@@ -116,10 +116,10 @@ class VariableSizeDataset(Dataset):
         self.brightness_jitter = float(brightness_jitter)
         self.contrast_jitter = float(contrast_jitter)
 
-        # Pipeline d'augmentation "Web-Safe" (appliquée sur PIL images)
+        # "Web-Safe" augmentation pipeline (applied to PIL images)
         augment_transforms = []
         
-        # Rotation légère (si activée)
+        # Light rotation (if enabled)
         if self.rotation_degrees > 0:
             augment_transforms.append(
                 T.RandomRotation(degrees=self.rotation_degrees, fill=1.0)  # fill=1 (blanc)
@@ -223,7 +223,7 @@ def padded_masked_collate(batch):
     max_w = ((max_w + stride - 1) // stride) * stride
 
     B = len(batch)
-    # Tenseurs remplis de zéros (padding par défaut)
+    # Zero-filled tensors (default padding)
     padded_inputs = torch.zeros(B, 1, max_h, max_w)
     padded_targets = torch.zeros(B, 1, max_h, max_w)
     masks = torch.zeros(B, 1, max_h, max_w)
@@ -231,11 +231,11 @@ def padded_masked_collate(batch):
     for i in range(B):
         h, w = inputs[i].shape[1], inputs[i].shape[2]
         
-        # Copier l'image en haut à gauche
+        # Copy image to top-left corner of padded tensor
         padded_inputs[i, :, :h, :w] = inputs[i]
         padded_targets[i, :, :h, :w] = targets[i]
         
-        # Créer le masque (1 = pixel valide, 0 = padding)
+        # Create mask (1 = valid pixel, 0 = padding)
         masks[i, :, :h, :w] = 1.0
 
     return padded_inputs, padded_targets, masks
@@ -243,7 +243,7 @@ def padded_masked_collate(batch):
 
 def get_dataloaders(data_config, use_cuda):
     noise = float(data_config.get("noise_level", 0.0))
-    # On définit une limite de sécurité (2048 pixels de haut est suffisant pour apprendre les patterns)
+    # Safety limit (2048 pixels height is sufficient to learn patterns)
     max_h = int(data_config.get("max_height", 2048))
     data_dir = data_config.get('data_dir', './')
     files = [f for f in os.listdir(data_dir) if f.endswith('_linear.png')]
