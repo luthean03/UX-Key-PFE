@@ -1,10 +1,10 @@
 # VAE Configuration
 
 # Resume training from checkpoint (optional)
-resume: "logs/VAE_2/best_model.pt" 
+resume: null 
 
 data:
-  data_dir: "dataset/vae_dataset_scaled_min"
+  data_dir: "dataset/vae_dataset_scaled"
   archetypes_dir: "dataset/archetypes_png_scaled"  # Labeled wireframes for latent metrics
   batch_size: 16                    # SmartBatchSampler groups similar-sized images to minimize padding
   num_workers: 8                    # I/O parallelization
