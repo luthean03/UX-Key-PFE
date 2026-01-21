@@ -782,7 +782,8 @@ def test(config):
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
     
     checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint)
+    # Use strict=False to support loading old checkpoints with deprecated 'encoder' attribute
+    model.load_state_dict(checkpoint, strict=False)
     logging.info(f"Loaded model from: {model_path}")
     model.eval()
     
@@ -911,7 +912,8 @@ def interpolate(config):
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
     
     checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint)
+    # Use strict=False to support loading old checkpoints with deprecated 'encoder' attribute
+    model.load_state_dict(checkpoint, strict=False)
     logging.info(f"Loaded model from: {model_path}")
     model.eval()
     
