@@ -185,14 +185,6 @@ class VAE(nn.Module):
         self.enc_block1 = ResidualBlock(64, 128, stride=2)   # → features 128 canaux
         self.enc_block2 = ResidualBlock(128, 256, stride=2)  # → features 256 canaux
         self.enc_block3 = ResidualBlock(256, 512, stride=2)  # → features 512 canaux
-        
-        # Ancien encoder (pour compatibilité)
-        self.encoder = nn.Sequential(
-            self.enc_conv1,
-            self.enc_block1,
-            self.enc_block2,
-            self.enc_block3,
-        )
 
         self.spp = MaskedSPPLayer(self.spp_levels)
         self.spp_out_dim = 512 * sum([s * s for s in self.spp_levels])
@@ -434,91 +426,3 @@ class VAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         
         return mu, logvar, z
-    
-    @staticmethod
-    def slerp(z1: torch.Tensor, z2: torch.Tensor, alpha: float) -> torch.Tensor:
-        """Spherical Linear Interpolation (SLERP) between two latent codes.
-        
-        SLERP preserves the norm of latent vectors, providing smoother
-        interpolations than linear interpolation, especially for generation.
-        
-        Args:
-            z1: (latent_dim,) or (B, latent_dim) first latent code
-            z2: (latent_dim,) or (B, latent_dim) second latent code
-            alpha: interpolation factor in [0, 1]
-            
-        Returns:
-            z_interp: interpolated latent code
-        """
-        # Normalize to unit vectors
-        z1_norm = z1 / (z1.norm(dim=-1, keepdim=True) + 1e-8)
-        z2_norm = z2 / (z2.norm(dim=-1, keepdim=True) + 1e-8)
-        
-        # Compute angle between vectors
-        dot = (z1_norm * z2_norm).sum(dim=-1, keepdim=True)
-        dot = torch.clamp(dot, -1.0 + 1e-6, 1.0 - 1e-6)  # Numerical stability
-        omega = torch.acos(dot)
-        
-        # SLERP formula
-        sin_omega = torch.sin(omega)
-        
-        # Handle nearly parallel vectors (use lerp instead)
-        if sin_omega.abs().min() < 1e-6:
-            return (1 - alpha) * z1 + alpha * z2
-        
-        # Scale back to original magnitudes (average of both)
-        scale1 = z1.norm(dim=-1, keepdim=True)
-        scale2 = z2.norm(dim=-1, keepdim=True)
-        scale = (1 - alpha) * scale1 + alpha * scale2
-        
-        z_interp = (torch.sin((1 - alpha) * omega) / sin_omega) * z1_norm + \
-                   (torch.sin(alpha * omega) / sin_omega) * z2_norm
-        
-        return z_interp * scale
-    
-    def interpolate(self, z1: torch.Tensor, z2: torch.Tensor, 
-                    num_steps: int = 10, method: str = 'slerp',
-                    output_size: tuple = None) -> torch.Tensor:
-        """Generate interpolation frames between two latent codes.
-        
-        Args:
-            z1: (latent_dim,) first latent code
-            z2: (latent_dim,) second latent code
-            num_steps: Number of interpolation steps
-            method: 'slerp' (spherical) or 'lerp' (linear)
-            output_size: Optional (H, W) to resize outputs
-            
-        Returns:
-            frames: (num_steps, 1, H, W) interpolated wireframes
-        """
-        device = next(self.parameters()).device
-        frames = []
-        
-        # Ensure proper shape
-        if z1.dim() == 1:
-            z1 = z1.unsqueeze(0)
-        if z2.dim() == 1:
-            z2 = z2.unsqueeze(0)
-        
-        z1 = z1.to(device)
-        z2 = z2.to(device)
-        
-        self.eval()
-        with torch.no_grad():
-            for i in range(num_steps):
-                alpha = i / (num_steps - 1) if num_steps > 1 else 0.5
-                
-                if method == 'slerp':
-                    z_interp = self.slerp(z1, z2, alpha)
-                else:  # lerp
-                    z_interp = (1 - alpha) * z1 + alpha * z2
-                
-                frame = self.decode(z_interp)
-                
-                if output_size is not None:
-                    frame = F.interpolate(frame, size=output_size,
-                                         mode='bilinear', align_corners=False)
-                
-                frames.append(frame)
-        
-        return torch.cat(frames, dim=0)

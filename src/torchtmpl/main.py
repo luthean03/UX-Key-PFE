@@ -858,34 +858,6 @@ def test(config):
     logging.info(f"Test completed. Results saved to {test_output_dir}")
 
 
-def slerp(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
-    """Spherical Linear Interpolation between two latent vectors.
-    
-    Args:
-        z1: First latent code (latent_dim,)
-        z2: Second latent code (latent_dim,)
-        alpha: Interpolation factor in [0, 1]
-    
-    Returns:
-        Interpolated latent code
-    """
-    # Normalize to unit vectors
-    z1_norm = z1 / (np.linalg.norm(z1) + 1e-8)
-    z2_norm = z2 / (np.linalg.norm(z2) + 1e-8)
-    
-    # Compute angle between vectors
-    dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
-    omega = np.arccos(dot)
-    sin_omega = np.sin(omega)
-    
-    # Handle nearly parallel vectors (use linear interpolation)
-    if np.abs(sin_omega) < 1e-6:
-        return (1 - alpha) * z1 + alpha * z2
-    
-    # SLERP formula
-    return (np.sin((1 - alpha) * omega) / sin_omega) * z1 + (np.sin(alpha * omega) / sin_omega) * z2
-
-
 def interpolate(config):
     """Interpolate between two images in latent space.
     
@@ -1021,7 +993,7 @@ def interpolate(config):
             alpha = step / (num_steps - 1) if num_steps > 1 else 0.5
             
             # SLERP in latent space (creates new points between z1 and z2)
-            z_interp = slerp(z1, z2, alpha)
+            z_interp = utils.slerp_numpy(z1, z2, alpha)
             
             # Log to verify we're using different latent points
             if step == 0 or step == num_steps - 1:
