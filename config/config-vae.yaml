@@ -116,8 +116,8 @@ test:
 # Interpolation configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml interpolate
 interpolate:
-  image1_path: "test/test_input/wireframe_2930463_linear.png"  # First image path
-  image2_path: "test/test_input/wireframe_2983236_linear.png"  # Second image path
+  image1_path: "test/test_input/wireframe_2983236_linear.png"  # First image path
+  image2_path: "test/test_input/wireframe_3008792_linear.png"  # Second image path
   output_dir: "test/interpolate_output"            # Output directory for interpolation grid
   num_steps: 10                                     # Number of interpolation steps
   model_path: "logs/VAE_0/last_model.pt"           # Path to trained model checkpoint
