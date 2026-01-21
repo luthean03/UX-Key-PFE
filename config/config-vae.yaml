@@ -122,7 +122,7 @@ test:
 # Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml interpolate
 interpolate:
   image1_path: "./test/test_input/wireframe_2930463_linear.png"  # Chemin à l'image 1
-  image2_path: "./test/test_input/wireframe_3024123_linear.png"  # Chemin à l'image 2
+  image2_path: "./test/test_input/wireframe_2983236_linear.png"  # Chemin à l'image 2
   output_dir: "./test/interpolate_output"            # Dossier pour enregistrer la grille d'interpolation
   num_steps: 10                                 # Nombre de frames d'interpolation entre les deux images
   model_path: "logs/VAE_0/last_model.pt"       # Checkpoint du modèle entraîné
