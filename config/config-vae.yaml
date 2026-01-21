@@ -4,18 +4,18 @@
 
 # === RESUME TRAINING (Optionnel) ===
 # Chemin vers un checkpoint (.pt) pour reprendre l'entraînement
-resume: "logs/VAE_14/last_model.pt" 
+resume: "logs/VAE_1/best_model.pt" 
 
 data:
-  data_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/vae_dataset_scaled"
-  archetypes_dir: "/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png"  # Wireframes étiquetés pour métriques latentes
-  batch_size: 16                    # Requis pour tailles variables
+  data_dir: "dataset/vae_dataset_scaled"
+  archetypes_dir: "dataset/archetypes_png_scaled"  # Wireframes étiquetés pour métriques latentes
+  batch_size: 16                    # SmartBatchSampler groups similar-sized images to minimize padding
   num_workers: 8                 # Parallélisation I/O
   valid_ratio: 0.2               # 80/20 train/valid split
   seed: 42                       # Reproductibilité
   
   # Gestion mémoire
-  max_height: 2048               # Limite hauteur (crop si dépasse)
+  max_height: 3000               # Limite hauteur (crop si dépasse)
   
   # === DENOISING (Augmenté pour robustesse) ===
   noise_level: 0.20              # était: 0.15 → +33% bruit gaussien
@@ -38,67 +38,91 @@ model:
   class: "VAE"                   # Doit correspondre à vae_models.py
   latent_dim: 128                # Dimension espace latent
   input_channels: 1              # Grayscale
-  dropout_p: 0.15                # Dropout dans decoder
-  use_skip_connections: true     # NOUVEAU: Skip connections U-Net (préserve détails)
+  dropout_p: 0.1                 # Dropout dans decoder (réduit pour VAE pur)
+  # use_skip_connections: false  # DÉSACTIVÉ: cause posterior collapse dans un VAE
+                                 # (le décodeur "triche" en regardant les pixels d'entrée)
 
-# ==================== LOSS (Optimisé pour STRUCTURE de l'espace latent) ====================
+# ==================== LOSS (Optimisé pour espace latent STRUCTURÉ) ====================
+# Options: 'l1', 'mse', 'perceptual'
+# 'perceptual' = L1 + SSIM + Gradient + Multi-scale (recommandé pour wireframes)
+#
+# NORMALISATION STANDARD VAE:
+# - recon_loss: SUM over all pixels (~50,000 for 1M pixels)
+# - kld_loss: SUM over dims, MEAN over batch (~20-50 typically)
+#
+# With sum reduction: reconstruction naturally dominates by ~1000x
+# Therefore beta_kld = 1.0 restores proper balance without posterior collapse
 loss:
-  name: "l1"             # VGG + Pixel + KLD
-  beta_kld: 1                  # β-VAE: CRITIQUE pour clusters structurés + interpolations cohérentes
-  warmup_epochs: 0              # KLD warmup 0 → 1.0 (évite posterior collapse)
+  name: "l1"                     # 'l1', 'mse', ou 'perceptual'
+  beta_kld: 1.0                  # Using sum reduction: naturally balanced at 1.0
+  loss_scale: 1                  # Pas de scaling (valeurs naturelles pour debug)
+  warmup_epochs: 0              # KLD warmup progressif (évite posterior collapse au début)
+  
+  # Poids des composantes (uniquement pour name='perceptual')
+  lambda_l1: 1.0                 # Précision pixel (reconstruction fidèle)
+  lambda_ssim: 0.5               # Similarité structurelle (layouts, blocs)
+  lambda_gradient: 0.1           # Préservation des bords (lignes, contours)
+  lambda_multiscale: 0.2         # Hiérarchie spatiale (global + détails)
+  use_multiscale: true           # Activer loss multi-échelle
 
 # ==================== OPTIMIZER (Démarrage plus conservateur) ====================
 optim:
   algo: "AdamW"
   params:
-    lr: 0.0003                   # était: 0.0005 → -40% (démarrage plus doux)
-    weight_decay: 0.0001         # était: 0.00001 → x10 (régularisation L2)
+    lr: 0.0003                   # Learning rate initial
+    weight_decay: 0.0001         # Régularisation L2
   
   # === SCHEDULER (CosineAnnealingWarmRestarts pour cycles d'apprentissage) ===
   scheduler:
-    name: "CosineAnnealingWarmRestarts"  # était: ReduceLROnPlateau
+    name: "CosineAnnealingWarmRestarts"
     params:
-      T_0: 100                    # Redémarre tous les 10 epochs
+      T_0: 10                   # Redémarre tous les 100 epochs
       T_mult: 2                  # Double la période après chaque restart
-      eta_min: 0.000003           # LR minimum (plancher) - était 3e-05
+      eta_min: 0.000003          # LR minimum (plancher)
       verbose: true
 
-# ==================== OPTIMIZATION ====================
+# ==================== TRAINING OPTIMIZATION ====================
+# NOTE: lr et weight_decay sont définis dans optim.params (source unique de vérité)
 optimization:
-  lr: 0.0003                     # Répété (legacy)
-  weight_decay: 0.0001
-  accumulation_steps: 4          # était: 128 → /2 (plus de variance dans gradients)
+  accumulation_steps: 4          # Gradient accumulation (effective batch = batch_size * accumulation_steps)
   mixed_precision: true          # AMP pour vitesse + mémoire
-  
-  # === MIXUP / CUTMIX (Améliore généralisation) ===
-  use_mixup: true                # NOUVEAU: Active Mixup
-  mixup_alpha: 0.2               # Paramètre de mélange (0.2 = mélange léger)
-  use_cutmix: true               # NOUVEAU: Active CutMix
-  cutmix_alpha: 1.0              # Paramètre de découpe
-  mix_prob: 0.3                  # NOUVEAU: Probabilité d'appliquer mix (30% des batches)
 
 # ==================== LOGGING ====================
 logging:
   logdir: "./logs"
-  tensorboard: true              # Active TensorBoard
-  log_loss_components: true      # NOUVEAU: Log pixel/vgg/kld séparément
-  save_reconstructions_every: 5  # NOUVEAU: Sauvegarde images tous les 5 epochs
+  tensorboard: true
+  log_loss_components: true      # Log SSIM/gradient/KLD séparément
+  save_reconstructions_every: 5
   latent_visualization:
-    # Frequency (in epochs) to run t-SNE + k-means on the training set
-    frequency: 20
-    # Maximum number of training samples to encode for the visualization
+    frequency: 20                # t-SNE tous les 20 epochs
     max_samples: 500
-  # wandb:                       # (Optionnel)
+  # wandb:
   #   project: "ux-vae-improved"
   #   entity: "your-team"
 
 # ==================== TRAINING ====================
-nepochs: 1000                     # Nombre total d'epochs
+nepochs: 100
 
-# ==================== EARLY STOPPING (NOUVEAU) ====================
+# ==================== EARLY STOPPING ====================
 early_stopping:
-  enabled: true                  # Active early stopping
+  enabled: true
   monitor: "test_SSIM"           # Métrique surveillée (ou "test_ELBO")
   mode: "max"                    # max pour SSIM, min pour ELBO
   patience: 20                   # Arrête si pas d'amélioration 20 epochs
   min_delta: 0.0001              # Amélioration minimale considérée
+# ==================== TEST (Inference) ====================
+# Utilisé pour tester le modèle entraîné sur des images
+# Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml test
+test:
+  test_input_dir: "test/test_input"          # Dossier contenant les images à tester
+  test_output_dir: "test/test_output"        # Dossier pour enregistrer les résultats (grilles de comparaison)
+  model_path: "logs/VAE_0/last_model.pt" # Chemin vers le checkpoint du modèle entraîné
+# ==================== INTERPOLATION ====================
+# Interpolate between two images in latent space
+# Exécuter avec: python -m src.torchtmpl.main config/config-vae.yaml interpolate
+interpolate:
+  image1_path: "test/test_input/wireframe_2930463_linear.png"  # Chemin à l'image 1
+  image2_path: "test/test_input/wireframe_2983236_linear.png"  # Chemin à l'image 2
+  output_dir: "test/interpolate_output"            # Dossier pour enregistrer la grille d'interpolation
+  num_steps: 10                                 # Nombre de frames d'interpolation entre les deux images
+  model_path: "logs/VAE_0/last_model.pt"       # Checkpoint du modèle entraîné

@@ -2,11 +2,108 @@
 
 # Standard imports
 import os
+import random
 
 # External imports
+import numpy as np
 import torch
 import torch.nn
 import tqdm
+
+
+# ===================== Reproducibility =====================
+def set_reproducibility(seed: int) -> None:
+    """Set random seeds for reproducibility across numpy, torch, and CUDA.
+    
+    Args:
+        seed: Random seed value (typically from config)
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # Prevent non-deterministic algorithms
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+# ===================== SLERP (Centralisé) =====================
+def slerp_numpy(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
+    """Spherical Linear Interpolation (SLERP) between two latent codes (numpy).
+    
+    SLERP preserves the norm of latent vectors, providing smoother
+    interpolations than linear interpolation.
+    
+    Args:
+        z1: (latent_dim,) first latent code
+        z2: (latent_dim,) second latent code  
+        alpha: interpolation factor in [0, 1]
+        
+    Returns:
+        z_interp: interpolated latent code with interpolated magnitude
+    """
+    # Normalize to unit vectors
+    z1_norm = z1 / (np.linalg.norm(z1) + 1e-8)
+    z2_norm = z2 / (np.linalg.norm(z2) + 1e-8)
+    
+    # Compute angle between vectors
+    dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
+    omega = np.arccos(dot)
+    sin_omega = np.sin(omega)
+    
+    # Handle nearly parallel vectors (use lerp instead)
+    if np.abs(sin_omega) < 1e-6:
+        return (1 - alpha) * z1 + alpha * z2
+    
+    # Scale back to interpolated magnitude
+    scale1 = np.linalg.norm(z1)
+    scale2 = np.linalg.norm(z2)
+    scale = (1 - alpha) * scale1 + alpha * scale2
+    
+    z_interp = (np.sin((1 - alpha) * omega) / sin_omega) * z1_norm + \
+               (np.sin(alpha * omega) / sin_omega) * z2_norm
+    
+    return z_interp * scale
+
+
+def slerp_torch(z1: torch.Tensor, z2: torch.Tensor, alpha: float) -> torch.Tensor:
+    """Spherical Linear Interpolation (SLERP) between two latent codes (torch).
+    
+    SLERP preserves the norm of latent vectors, providing smoother
+    interpolations than linear interpolation.
+    
+    Args:
+        z1: (latent_dim,) or (B, latent_dim) first latent code
+        z2: (latent_dim,) or (B, latent_dim) second latent code
+        alpha: interpolation factor in [0, 1]
+        
+    Returns:
+        z_interp: interpolated latent code with interpolated magnitude
+    """
+    # Normalize to unit vectors
+    z1_norm = z1 / (z1.norm(dim=-1, keepdim=True) + 1e-8)
+    z2_norm = z2 / (z2.norm(dim=-1, keepdim=True) + 1e-8)
+    
+    # Compute angle between vectors
+    dot = (z1_norm * z2_norm).sum(dim=-1, keepdim=True)
+    dot = torch.clamp(dot, -1.0 + 1e-6, 1.0 - 1e-6)  # Numerical stability
+    omega = torch.acos(dot)
+    sin_omega = torch.sin(omega)
+    
+    # Handle nearly parallel vectors (use lerp instead)
+    if sin_omega.abs().min() < 1e-6:
+        return (1 - alpha) * z1 + alpha * z2
+    
+    # Scale back to interpolated magnitude
+    scale1 = z1.norm(dim=-1, keepdim=True)
+    scale2 = z2.norm(dim=-1, keepdim=True)
+    scale = (1 - alpha) * scale1 + alpha * scale2
+    
+    z_interp = (torch.sin((1 - alpha) * omega) / sin_omega) * z1_norm + \
+               (torch.sin(alpha * omega) / sin_omega) * z2_norm
+    
+    return z_interp * scale
 
 
 def generate_unique_logpath(logdir, raw_run_name):

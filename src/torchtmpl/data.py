@@ -1,19 +1,99 @@
 # src/torchtmpl/data.py
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from PIL import Image
 import os
 import torchvision.transforms.functional as TF
 import torchvision.transforms as T
 import random
 import logging
+import numpy as np
+from typing import List, Optional
 
 Image.MAX_IMAGE_PIXELS = None 
 
+
+class SmartBatchSampler(Sampler):
+    """Batches sorted by image height with noise to minimize padding while adding randomness.
+    
+    Groups similar-sized images together to reduce wasted GPU memory from padding,
+    while adding noise to prevent strict sorting bias. This is crucial for datasets
+    with highly variable image sizes (e.g., phone wireframes 1000-3000px).
+    
+    Example with batch_size=16:
+    - Without sorting: [1024, 1024, ..., 1024, 3000] → all padded to 3000
+    - With SmartBatching: [1024±100, 1024±100, ..., 3000±100, 3000±100]
+      → groups similar sizes, reduces padding by ~80-95%
+    """
+    
+    def __init__(self, dataset, batch_size: int, shuffle: bool = True):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        
+        # Scan image heights for intelligent batching
+        self.heights = self._scan_heights()
+    
+    def _scan_heights(self):
+        """Scan all images to get their heights (cached for efficiency)."""
+        heights = []
+        logging.info("Scanning dataset heights for SmartBatching (may take a few seconds)...")
+        for filename in self.dataset.files:
+            try:
+                img_path = os.path.join(self.dataset.root_dir, filename)
+                with Image.open(img_path) as img:
+                    h = img.height
+                    # Apply max_height crop if needed
+                    if h > self.dataset.max_height:
+                        h = self.dataset.max_height
+                    heights.append(h)
+            except Exception as e:
+                logging.warning(f"Failed to scan height for {filename}: {e}")
+                heights.append(self.dataset.max_height)
+        logging.info(f"Scan complete: {len(heights)} images, height range: {min(heights)}-{max(heights)}px")
+        return heights
+    
+    def __iter__(self):
+        indices = np.arange(len(self.dataset))
+        
+        if self.shuffle:
+            # Add ±100px noise to heights to avoid strict sorting (which could bias learning)
+            # but keep similar sizes grouped together
+            noisy_heights = np.array(self.heights) + np.random.uniform(-100, 100, size=len(indices))
+            indices = indices[np.argsort(noisy_heights)]
+        else:
+            # Pure sorting for reproducibility (validation)
+            indices = indices[np.argsort(self.heights)]
+        
+        # Create batches from sorted indices
+        batches = [indices[i:i + self.batch_size] for i in range(0, len(indices), self.batch_size)]
+        
+        if self.shuffle:
+            # Shuffle batch ORDER but keep batch content homogeneous in size
+            np.random.shuffle(batches)
+        
+        for batch in batches:
+            yield batch.tolist()
+    
+    def __len__(self):
+        return (len(self.dataset) + self.batch_size - 1) // self.batch_size
+
+
 class VariableSizeDataset(Dataset):
-    def __init__(self, root_dir, noise_level=0.0, max_height=2048, augment=False, files_list=None, 
-                 sp_prob=0.02, perspective_p=0.3, perspective_distortion_scale=0.08, random_erasing_prob=0.5,
-                 rotation_degrees=0, brightness_jitter=0.0, contrast_jitter=0.0):
+    def __init__(self, 
+        root_dir: str,
+        noise_level: float = 0.0,
+        max_height: int = 2048,
+        augment: bool = False,
+        files_list: Optional[List[str]] = None,
+        sp_prob: float = 0.02,
+        perspective_p: float = 0.3,
+        perspective_distortion_scale: float = 0.08,
+        random_erasing_prob: float = 0.5,
+        rotation_degrees: float = 0,
+        brightness_jitter: float = 0.0,
+        contrast_jitter: float = 0.0
+    ) -> None:
         self.root_dir = root_dir
         # Allow passing an explicit files list (used when splitting train/valid)
         if files_list is not None:
@@ -64,8 +144,19 @@ class VariableSizeDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
+        if not (0 <= idx < len(self.files)):
+            raise IndexError(f"Index {idx} out of range [0, {len(self.files)})")
+        
         img_path = os.path.join(self.root_dir, self.files[idx])
-        clean_image = Image.open(img_path).convert('L')
+        
+        # Validation
+        if not os.path.exists(img_path):
+            raise FileNotFoundError(f"Image not found: {img_path}")
+        
+        try:
+            clean_image = Image.open(img_path).convert('L')
+        except Exception as e:
+            raise RuntimeError(f"Failed to load image {img_path}: {e}")
         
         # === CROP pour éviter le OOM ===
         w, h = clean_image.size
@@ -229,10 +320,18 @@ def get_dataloaders(data_config, use_cuda):
     g = torch.Generator()
     g.manual_seed(seed)
 
-    train_loader = DataLoader(
+    # Use SmartBatchSampler for training to minimize padding overhead
+    train_sampler = SmartBatchSampler(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=True  # Shuffle with noise to keep sizes grouped
+    )
+    
+    # For validation: use standard DataLoader (no SmartBatchSampler)
+    # This ensures consistent image ordering for reconstruction previews
+    train_loader = DataLoader(
+        train_dataset,
+        batch_sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=use_cuda,
         worker_init_fn=_seed_worker if num_workers > 0 else None,

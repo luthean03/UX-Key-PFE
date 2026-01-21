@@ -51,7 +51,7 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
     images = []  # Stocker aussi les images
     
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         for idx, img_path in enumerate(archetype_files):
             # Extract archetype name
             archetype_name = img_path.stem.replace("_linear", "")
@@ -72,14 +72,27 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
                 
                 # Transform to tensor
                 import torchvision.transforms.functional as TF
-                img_tensor = TF.to_tensor(img).unsqueeze(0).to(device)
-                
-                # Encode
-                _, mu, _ = model(img_tensor)
-                
+                img_tensor = TF.to_tensor(img).unsqueeze(0)
+
+                # Pad to multiple of 32 (same logic as padded_masked_collate)
+                stride = 32
+                _, _, h, w = img_tensor.unsqueeze(0).shape if img_tensor.dim() == 3 else img_tensor.shape
+                pad_h = ((h + stride - 1) // stride) * stride
+                pad_w = ((w + stride - 1) // stride) * stride
+
+                padded = torch.zeros(1, img_tensor.shape[1], pad_h, pad_w)
+                mask = torch.zeros(1, 1, pad_h, pad_w)
+                # copy top-left like collate
+                padded[0, :, :h, :w] = img_tensor[0]
+                mask[0, 0, :h, :w] = 1.0
+
+                # Encode using the padded tensor and mask (like training/validation)
+                _, mu, _ = model(padded.to(device), mask=mask.to(device))
+
                 latents.append(mu.cpu().numpy())
                 labels.append(idx)
-                images.append(img_tensor.cpu())  # Sauvegarder l'image
+                # Save tuple: (padded_image_cpu, mask_cpu, orig_h, orig_w)
+                images.append((padded.cpu(), mask.cpu(), h, w))  # Sauvegarder l'image et son masque
                 
             except Exception as e:
                 logging.warning(f"Failed to load {img_path.name}: {e}")
@@ -177,92 +190,12 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-def generate_interpolation_video(model, latent1, latent2, archetype_img1, archetype_img2, device, num_steps=10, include_endpoints=True, target_height=512):
-    """Generate interpolation frames between two latents (for TensorBoard video).
-    
-    Interpolates both in latent space AND geometrically (varying height/width)
-    to handle archetypes with different dimensions.
-    
-    Args:
-        model: VAE model
-        latent1: (latent_dim,) first latent code (archetype 1)
-        latent2: (latent_dim,) second latent code (archetype 2)
-        archetype_img1: Tensor (1, C, H, W) original archetype 1 image (optional)
-        archetype_img2: Tensor (1, C, H, W) original archetype 2 image (optional)
-        device: torch.device
-        num_steps: Number of interpolation steps (excluding endpoints if include_endpoints=True)
-        include_endpoints: If True, add archetype reconstructions at start/end
-        target_height: Resize all frames to this height for consistent visualization
-    
-    Returns:
-        torch.Tensor: (num_frames, C, H, W) interpolated frames or None if failed
-    """
-    model.eval()
-    reconstructions = []
-    
-    # Get original dimensions for geometric interpolation
-    orig_h1, orig_w1 = archetype_img1.shape[2:] if archetype_img1 is not None else (target_height, target_height)
-    orig_h2, orig_w2 = archetype_img2.shape[2:] if archetype_img2 is not None else (target_height, target_height)
-    
-    with torch.no_grad():
-        # 1. Reconstruct archetype 1 (beginning) - use forward pass like validation
-        if include_endpoints:
-            try:
-                if archetype_img1 is not None:
-                    # Forward complet (encode + decode) comme pendant validation
-                    recon1, _, _ = model(archetype_img1.to(device))
-                else:
-                    # Fallback: decode depuis latent
-                    z1_torch = torch.from_numpy(latent1).unsqueeze(0).float().to(device)
-                    recon1 = model.decode(z1_torch)
-                reconstructions.append(recon1)
-            except Exception as e:
-                logging.warning(f"Endpoint 1 decode failed: {e}")
-                return None
-        
-        # 2. Linear interpolation in latent space + geometric interpolation in pixel space
-        alphas = np.linspace(0, 1, num_steps)
-        for alpha in alphas:
-            z_interp = (1 - alpha) * latent1 + alpha * latent2
-            z_interp_torch = torch.from_numpy(z_interp).unsqueeze(0).float().to(device)
-            
-            try:
-                recon = model.decode(z_interp_torch)
-                
-                # Interpolate geometry: smoothly vary height and width between the two archetypes
-                h_interp = int((1 - alpha) * orig_h1 + alpha * orig_h2)
-                w_interp = int((1 - alpha) * orig_w1 + alpha * orig_w2)
-                
-                # Resize this frame to interpolated dimensions
-                recon_resized = F.interpolate(recon, size=(h_interp, w_interp), 
-                                             mode='bilinear', align_corners=False)
-                reconstructions.append(recon_resized)
-            except Exception as e:
-                logging.warning(f"Interpolation decode failed ({e})")
-                return None
-        
-        # 3. Reconstruct archetype 2 (end) - use forward pass like validation
-        if include_endpoints:
-            try:
-                if archetype_img2 is not None:
-                    # Forward complet (encode + decode) comme pendant validation
-                    recon2, _, _ = model(archetype_img2.to(device))
-                else:
-                    # Fallback: decode depuis latent
-                    z2_torch = torch.from_numpy(latent2).unsqueeze(0).float().to(device)
-                    recon2 = model.decode(z2_torch)
-                reconstructions.append(recon2)
-            except Exception as e:
-                logging.warning(f"Endpoint 2 decode failed: {e}")
-                return None
-    
-    if len(reconstructions) == 0:
-        return None
-    
-    # Stack frames without normalization - return raw VAE outputs
-    # Format: (num_frames, C, H, W)
-    frames = torch.cat(reconstructions, dim=0).cpu()
-    return frames
+# SLERP est centralisé dans utils.py
+from .utils import slerp_numpy as slerp
+
+
+# ⚠️  INTERPOLATION TENSORBOARD REMOVED
+# Use the dedicated interpolate() function in main.py instead
 
 
 def compute_latent_density_metrics(latents, n_neighbors=5):
@@ -341,7 +274,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
     train_latents = []
     train_indices = []
     
-    with torch.no_grad():
+    with torch.inference_mode():
         for i, (inputs, _, masks) in enumerate(train_loader):
             if i >= max_samples:
                 break
@@ -404,35 +337,8 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             else:
                 logging.info(f"  Cluster {cluster_id}: ⚠️  Multiple archetypes: {', '.join(archs)}")
     
-    # 6. Interpolation Image Grid (entre 2 archetypes aléatoires)
-    if archetype_latents is not None and len(archetype_latents) >= 2:
-        try:
-            import torchvision
-            # Choisir 2 archetypes au hasard
-            idx1, idx2 = np.random.choice(len(archetype_latents), 2, replace=False)
-            logging.info(f"Generating interpolation sequence between {archetype_names[idx1]} and {archetype_names[idx2]}")
-            
-            # Générer les frames (avec endpoints = archetypes reconstruits via forward complet)
-            img1 = archetype_images[idx1] if archetype_images is not None else None
-            img2 = archetype_images[idx2] if archetype_images is not None else None
-            interp_frames = generate_interpolation_video(
-                model, archetype_latents[idx1], archetype_latents[idx2], 
-                img1, img2, device, 
-                num_steps=8, include_endpoints=True, target_height=512
-            )
-            
-            if interp_frames is not None:
-                # Save each frame separately - navigate between them via TensorBoard
-                frames_normalized = (interp_frames - interp_frames.min()) / (interp_frames.max() - interp_frames.min() + 1e-8)
-                for frame_idx, frame in enumerate(frames_normalized):
-                    writer.add_image(
-                        f"interpolations/{archetype_names[idx1]}_to_{archetype_names[idx2]}", 
-                        frame, 
-                        global_step=epoch * 1000 + frame_idx  # epoch*1000 groups frames by epoch
-                    )
-                logging.info(f"✅ Interpolation ({frames_normalized.shape[0]} frames) saved: {archetype_names[idx1]} → {archetype_names[idx2]}")
-        except Exception as e:
-            logging.warning(f"Interpolation failed: {e}")
+    # ⚠️  INTERPOLATION TENSORBOARD REMOVED
+    # Use the dedicated interpolate() function in main.py instead
     
     # 7. Latent Density
     density_metrics = compute_latent_density_metrics(train_latents, n_neighbors=5)

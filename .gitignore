@@ -40,11 +40,13 @@ config.yaml
 logslurms
 
 archetypes/
-archetypes_png/
+archetypes_png*
 vae_dataset/
 samir_lom/
 *.zip
 configs/
 job.sbatch
 job.sbatch.*
+test*
 vae_dataset*
+dataset*

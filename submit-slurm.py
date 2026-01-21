@@ -36,27 +36,32 @@ mkdir -p $TMPDIR/code
 # Copie du code sur le noeud local pour I/O rapide (exclure logs/datasets lourds)
 rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude 'vae_dataset*' . $TMPDIR/code
 
-# Copie des archetypes pour métriques latentes (depuis le path YAML)
-SRC_ARCHETYPES="{archetypes_src}"
-# Gérer paths relatifs (relative au dossier d'exécution)
-if [[ "$SRC_ARCHETYPES" != /* ]]; then
-    SRC_ARCHETYPES="$current_dir/$SRC_ARCHETYPES"
-fi
-if [[ -d "$SRC_ARCHETYPES" ]]; then
-    echo "✅ Copying archetypes from $SRC_ARCHETYPES to node..."
-    rsync -r "$SRC_ARCHETYPES/" "$TMPDIR/code/archetypes_png/"
-    echo "✅ Archetypes copied: $(ls $TMPDIR/code/archetypes_png | wc -l) files"
-fi
+# Copie des archetypes et dataset uniquement pour training
+if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then
+    # Copie des archetypes pour métriques latentes (depuis le path YAML)
+    SRC_ARCHETYPES="{archetypes_src}"
+    # Gérer paths relatifs (relative au dossier d'exécution)
+    if [[ "$SRC_ARCHETYPES" != /* ]]; then
+        SRC_ARCHETYPES="$current_dir/$SRC_ARCHETYPES"
+    fi
+    if [[ -d "$SRC_ARCHETYPES" ]]; then
+        echo "✅ Copying archetypes from $SRC_ARCHETYPES to node..."
+        rsync -r "$SRC_ARCHETYPES/" "$TMPDIR/code/archetypes_png/"
+        echo "✅ Archetypes copied: $(ls $TMPDIR/code/archetypes_png | wc -l) files"
+    fi
 
-# Copie du dataset d'entraînement sur le nœud (depuis le path YAML)
-SRC_DATA="{data_src}"
-if [[ "$SRC_DATA" != /* ]]; then
-    SRC_DATA="$current_dir/$SRC_DATA"
-fi
-if [[ -d "$SRC_DATA" ]]; then
-    echo "✅ Copying training dataset to node from $SRC_DATA..."
-    rsync -r "$SRC_DATA/" "$TMPDIR/code/vae_dataset/"
-    echo "✅ Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
+    # Copie du dataset d'entraînement sur le nœud (depuis le path YAML)
+    SRC_DATA="{data_src}"
+    if [[ "$SRC_DATA" != /* ]]; then
+        SRC_DATA="$current_dir/$SRC_DATA"
+    fi
+    if [[ -d "$SRC_DATA" ]]; then
+        echo "✅ Copying training dataset to node from $SRC_DATA..."
+        rsync -r "$SRC_DATA/" "$TMPDIR/code/vae_dataset/"
+        echo "✅ Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
+    fi
+else
+    echo "Skipping dataset/archetypes copy (not needed for {command})"
 fi
 
 echo "Checking out the correct version of the code commit_id {commit_id}"
@@ -184,6 +189,57 @@ if [[ "{command}" == "test" || "{command}" == "train_test" ]]; then
     if [[ $? != 0 ]]; then
         exit -1
     fi
+    
+    # === COPIE DES RÉSULTATS DU TEST EN RETOUR ===
+    # Récupérer le chemin de sortie du test depuis la config
+    TEST_OUTPUT_DIR=$(python3 -c "
+import yaml
+import pathlib
+cfg = yaml.safe_load(open('$job_config'))
+test_output = cfg.get('test', {{}}).get('test_output_dir', './test_output')
+print(test_output)
+")
+    
+    # Copier les résultats du test du nœud vers le dossier partagé
+    if [[ -d "$TEST_OUTPUT_DIR" ]]; then
+        echo "✅ Copying test results back to shared filesystem..."
+        # Créer le dossier de destination s'il n'existe pas
+        mkdir -p "$current_dir/$TEST_OUTPUT_DIR"
+        # Copier les fichiers PNG de comparaison
+        rsync -r "$TEST_OUTPUT_DIR/" "$current_dir/$TEST_OUTPUT_DIR/" 2>/dev/null || true
+        echo "✅ Test results copied to: $current_dir/$TEST_OUTPUT_DIR"
+        echo "   Found $(ls $current_dir/$TEST_OUTPUT_DIR/*.png 2>/dev/null | wc -l) comparison images"
+    fi
+fi
+
+if [[ "{command}" == "interpolate" || "{command}" == "train_test" ]]; then
+    echo "Interpolation"
+    python3 -m torchtmpl.main "$job_config" interpolate {extra_args}
+
+    if [[ $? != 0 ]]; then
+        exit -1
+    fi
+    
+    # === COPIE DES RÉSULTATS D'INTERPOLATION EN RETOUR ===
+    # Récupérer le chemin de sortie depuis la config
+    INTERP_OUTPUT_DIR=$(python3 -c "
+import yaml
+import pathlib
+cfg = yaml.safe_load(open('$job_config'))
+interp_output = cfg.get('interpolate', {{}}).get('output_dir', './interpolate_output')
+print(interp_output)
+")
+    
+    # Copier les résultats du nœud vers le dossier partagé
+    if [[ -d "$INTERP_OUTPUT_DIR" ]]; then
+        echo "✅ Copying interpolation results back to shared filesystem..."
+        # Créer le dossier de destination s'il n'existe pas
+        mkdir -p "$current_dir/$INTERP_OUTPUT_DIR"
+        # Copier les fichiers PNG d'interpolation
+        rsync -r "$INTERP_OUTPUT_DIR/" "$current_dir/$INTERP_OUTPUT_DIR/" 2>/dev/null || true
+        echo "✅ Interpolation results copied to: $current_dir/$INTERP_OUTPUT_DIR"
+        echo "   Found $(ls $current_dir/$INTERP_OUTPUT_DIR/*.png 2>/dev/null | wc -l) interpolation grids"
+    fi
 fi
 
 echo "Done. Artifacts are written to the paths specified in the YAML (under $current_dir)."
@@ -206,7 +262,7 @@ def _pop_flag(argv, flag: str) -> bool:
 
 def _print_usage_and_exit(prog: str) -> None:
     print(
-        "Usage : {} config.yaml [nruns|1] [train|test|train_test] [extra args...]\n"
+        "Usage : {} config.yaml [nruns|1] [train|test|train_test|interpolate] [extra args...]\n"
         "Optional flags:\n"
         "  --dry-run       Print the generated sbatch script and exit\n"
         "  --allow-dirty   Allow uncommitted changes".format(
@@ -232,15 +288,15 @@ command = "train"
 if remaining:
     if remaining[0].isdigit():
         nruns = int(remaining.pop(0))
-        if remaining and remaining[0] in {"train", "test", "train_test"}:
+        if remaining and remaining[0] in {"train", "test", "train_test", "interpolate"}:
             command = remaining.pop(0)
-    elif remaining[0] in {"train", "test", "train_test"}:
+    elif remaining[0] in {"train", "test", "train_test", "interpolate"}:
         command = remaining.pop(0)
         if remaining and remaining[0].isdigit():
             nruns = int(remaining.pop(0))
 
-if command not in {"train", "test", "train_test"}:
-    raise ValueError("command must be one of: train, test, train_test")
+if command not in {"train", "test", "train_test", "interpolate"}:
+    raise ValueError("command must be one of: train, test, train_test, interpolate")
 
 if remaining and remaining[0] == "--":
     remaining.pop(0)

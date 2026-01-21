@@ -1,12 +1,18 @@
-"""SPP-based VAE for variable-size images.
+"""SPP-based VAE for variable-size images with structured latent space.
 
-This model uses Spatial Pyramid Pooling to obtain a fixed-size
-representation regardless of input height, and GroupNorm so it
-works with batch_size=1.
+This model is designed for UI/UX wireframe learning with focus on:
+1. Clustering: Clear separation of archetypes in latent space
+2. Interpolation: Smooth transitions between designs (SLERP support)
+3. Generation: Valid wireframe sampling from N(0,I)
+
+Uses Spatial Pyramid Pooling for fixed-size latent regardless of input height,
+and GroupNorm to work with batch_size=1.
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
+from typing import Optional
 
 
 class MaskedGroupNorm(nn.Module):
@@ -110,11 +116,15 @@ class CBAM(nn.Module):
 class ResidualBlock(nn.Module):
     def __init__(self, in_c, out_c, stride=1):
         super().__init__()
+        num_groups = min(32, out_c)
+        if out_c % num_groups != 0:
+            num_groups = out_c # Fallback to instance norm style if not divisible
+            
         self.conv1 = nn.Conv2d(in_c, out_c, 3, stride, 1, bias=False)
-        self.gn1 = MaskedGroupNorm(32, out_c) 
+        self.gn1 = MaskedGroupNorm(num_groups, out_c) 
         
         self.conv2 = nn.Conv2d(out_c, out_c, 3, 1, 1, bias=False)
-        self.gn2 = MaskedGroupNorm(32, out_c)
+        self.gn2 = MaskedGroupNorm(num_groups, out_c)
         
         self.cbam = CBAM(out_c) 
         
@@ -122,7 +132,7 @@ class ResidualBlock(nn.Module):
         self.use_projection = (stride != 1 or in_c != out_c)
         if self.use_projection:
             self.shortcut_conv = nn.Conv2d(in_c, out_c, 1, stride, bias=False)
-            self.shortcut_gn = MaskedGroupNorm(32, out_c)
+            self.shortcut_gn = MaskedGroupNorm(num_groups, out_c)
 
     def forward(self, x, mask=None):
         # Assurer que le masque d'entrée correspond à l'entrée x
@@ -190,9 +200,9 @@ class VAE(nn.Module):
         self.fc_mu = nn.Linear(self.spp_out_dim, self.latent_dim)
         self.fc_logvar = nn.Linear(self.spp_out_dim, self.latent_dim)
 
-        # Make decoder base more elongated to better match tall web pages
-        # (increase vertical resolution to reduce upsample distortion)
-        self.dec_h, self.dec_w = 64, 4
+        # Make decoder base with 2:1 aspect ratio (tall for mobile screens)
+        # Height:Width = 32:16 = 2:1 for vertical mobile layouts
+        self.dec_h, self.dec_w = 32, 16
         self.dec_channels = 256
         self.fc_decode = nn.Linear(self.latent_dim, self.dec_channels * self.dec_h * self.dec_w)
 
@@ -284,7 +294,16 @@ class VAE(nn.Module):
         
         return recon
 
-    def forward(self, x, mask=None):
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Input validation
+        assert x.dim() == 4, f"Expected 4D input (B,C,H,W), got {x.dim()}D shape {x.shape}"
+        assert x.shape[1] == 1, f"Expected 1 channel, got {x.shape[1]}"
+        assert x.shape[0] > 0, "Batch size must be positive"
+        
+        if mask is not None:
+            assert mask.shape == x.shape, f"Mask shape {mask.shape} != input shape {x.shape}"
+            assert mask.dtype == torch.float32, f"Mask dtype should be float32, got {mask.dtype}"
+        
         orig_h, orig_w = x.shape[2], x.shape[3]
         
         # --- Encoder avec propagation du masque ---
@@ -337,39 +356,169 @@ class VAE(nn.Module):
             recon = recon * mask
             
         return recon, mu, logvar
+    
+    def sample(self, num_samples: int = 1, device: torch.device = None, 
+               output_size: tuple = (1024, 128)) -> torch.Tensor:
+        """Generate new wireframes by sampling from N(0, I).
+        
+        Args:
+            num_samples: Number of wireframes to generate
+            device: Device to generate on (defaults to model's device)
+            output_size: (height, width) of generated images
+            
+        Returns:
+            samples: (num_samples, 1, H, W) generated wireframe images
+        """
+        if device is None:
+            device = next(self.parameters()).device
+        
+        # Sample from standard normal
+        z = torch.randn(num_samples, self.latent_dim, device=device)
+        
+        # Decode
+        samples = self.decode(z)
+        
+        # Resize to desired output size
+        if samples.shape[2:] != output_size:
+            samples = F.interpolate(samples, size=output_size, 
+                                   mode='bilinear', align_corners=False)
+        
+        return samples
+    
+    def encode(self, x: torch.Tensor, mask: torch.Tensor = None) -> tuple:
+        """Encode input images to latent space.
+        
+        Args:
+            x: (B, 1, H, W) input wireframe images
+            mask: (B, 1, H, W) optional mask for variable-size handling
+            
+        Returns:
+            mu: (B, latent_dim) mean of latent distribution
+            logvar: (B, latent_dim) log-variance of latent distribution
+            z: (B, latent_dim) sampled latent code
+        """
+        # Encoder avec propagation du masque
+        e1 = self.enc_conv1[0](x)  # Conv
+        e1 = self.enc_conv1[1](e1)  # GN
+        e1 = self.enc_conv1[2](e1)  # ReLU
+        e1 = self.enc_conv1[3](e1)  # MaxPool
+        
+        if mask is not None:
+            m1 = F.interpolate(mask, size=e1.shape[2:], mode='nearest')
+        else:
+            m1 = None
 
-        # Decoder avec skip connections U-Net style
-        d = self.fc_decode(z)
-        d = self.dec_unflatten(d)
+        e2 = self.enc_block1(e1, mask=m1)
+        if mask is not None:
+            m2 = F.interpolate(mask, size=e2.shape[2:], mode='nearest')
+        else:
+            m2 = None
+
+        e3 = self.enc_block2(e2, mask=m2)
+        if mask is not None:
+            m3 = F.interpolate(mask, size=e3.shape[2:], mode='nearest')
+        else:
+            m3 = None
+
+        features = self.enc_block3(e3, mask=m3)
         
-        if self.dropout_p > 0:
-            d = self.dec_dropout1(d)
+        if mask is not None:
+            m_feat = F.interpolate(mask, size=features.shape[2:], mode='nearest')
+        else:
+            m_feat = None
         
-        d = self.dec_up1(d)  # Upsample
+        # Masked SPP
+        pooled = self.spp(features, mask=m_feat)
+        mu = self.fc_mu(pooled)
+        logvar = self.fc_logvar(pooled)
+        z = self.reparameterize(mu, logvar)
         
-        # Skip connection depuis enc_block2 (256 canaux)
-        if self.use_skip_connections:
-            # Resize skip feature map to match decoder size
-            e3_resized = F.interpolate(e3, size=(d.shape[2], d.shape[3]), mode='bilinear', align_corners=False)
-            d = torch.cat([d, e3_resized], dim=1)  # Concatenation
+        return mu, logvar, z
+    
+    @staticmethod
+    def slerp(z1: torch.Tensor, z2: torch.Tensor, alpha: float) -> torch.Tensor:
+        """Spherical Linear Interpolation (SLERP) between two latent codes.
         
-        d = self.dec_block1(d)
+        SLERP preserves the norm of latent vectors, providing smoother
+        interpolations than linear interpolation, especially for generation.
         
-        if self.dropout_p > 0:
-            d = self.dec_dropout2(d)
+        Args:
+            z1: (latent_dim,) or (B, latent_dim) first latent code
+            z2: (latent_dim,) or (B, latent_dim) second latent code
+            alpha: interpolation factor in [0, 1]
+            
+        Returns:
+            z_interp: interpolated latent code
+        """
+        # Normalize to unit vectors
+        z1_norm = z1 / (z1.norm(dim=-1, keepdim=True) + 1e-8)
+        z2_norm = z2 / (z2.norm(dim=-1, keepdim=True) + 1e-8)
         
-        d = self.dec_up2(d)  # Upsample
+        # Compute angle between vectors
+        dot = (z1_norm * z2_norm).sum(dim=-1, keepdim=True)
+        dot = torch.clamp(dot, -1.0 + 1e-6, 1.0 - 1e-6)  # Numerical stability
+        omega = torch.acos(dot)
         
-        # Skip connection depuis enc_block1 (128 canaux)
-        if self.use_skip_connections:
-            e2_resized = F.interpolate(e2, size=(d.shape[2], d.shape[3]), mode='bilinear', align_corners=False)
-            d = torch.cat([d, e2_resized], dim=1)
+        # SLERP formula
+        sin_omega = torch.sin(omega)
         
-        d = self.dec_block2(d)
-        d = self.dec_up3(d)
-        d = self.dec_block3(d)
-        d = self.dec_up4(d)
-        recon_small = self.dec_final(d)
+        # Handle nearly parallel vectors (use lerp instead)
+        if sin_omega.abs().min() < 1e-6:
+            return (1 - alpha) * z1 + alpha * z2
         
-        recon = F.interpolate(recon_small, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
-        return recon, mu, logvar
+        # Scale back to original magnitudes (average of both)
+        scale1 = z1.norm(dim=-1, keepdim=True)
+        scale2 = z2.norm(dim=-1, keepdim=True)
+        scale = (1 - alpha) * scale1 + alpha * scale2
+        
+        z_interp = (torch.sin((1 - alpha) * omega) / sin_omega) * z1_norm + \
+                   (torch.sin(alpha * omega) / sin_omega) * z2_norm
+        
+        return z_interp * scale
+    
+    def interpolate(self, z1: torch.Tensor, z2: torch.Tensor, 
+                    num_steps: int = 10, method: str = 'slerp',
+                    output_size: tuple = None) -> torch.Tensor:
+        """Generate interpolation frames between two latent codes.
+        
+        Args:
+            z1: (latent_dim,) first latent code
+            z2: (latent_dim,) second latent code
+            num_steps: Number of interpolation steps
+            method: 'slerp' (spherical) or 'lerp' (linear)
+            output_size: Optional (H, W) to resize outputs
+            
+        Returns:
+            frames: (num_steps, 1, H, W) interpolated wireframes
+        """
+        device = next(self.parameters()).device
+        frames = []
+        
+        # Ensure proper shape
+        if z1.dim() == 1:
+            z1 = z1.unsqueeze(0)
+        if z2.dim() == 1:
+            z2 = z2.unsqueeze(0)
+        
+        z1 = z1.to(device)
+        z2 = z2.to(device)
+        
+        self.eval()
+        with torch.no_grad():
+            for i in range(num_steps):
+                alpha = i / (num_steps - 1) if num_steps > 1 else 0.5
+                
+                if method == 'slerp':
+                    z_interp = self.slerp(z1, z2, alpha)
+                else:  # lerp
+                    z_interp = (1 - alpha) * z1 + alpha * z2
+                
+                frame = self.decode(z_interp)
+                
+                if output_size is not None:
+                    frame = F.interpolate(frame, size=output_size,
+                                         mode='bilinear', align_corners=False)
+                
+                frames.append(frame)
+        
+        return torch.cat(frames, dim=0)
