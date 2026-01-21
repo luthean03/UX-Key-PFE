@@ -180,8 +180,9 @@ class VariableSizeDataset(Dataset):
 
         clean_tensor = TF.to_tensor(clean_image)
 
-        # === 3. BRUIT GAUSSIEN (Denoising) ===
-        if self.noise_level > 0.0:
+        # === 3. BRUIT GAUSSIEN (Denoising - uniquement pour le train) ===
+        # Note: le bruit ne doit être appliqué que pendant l'entraînement, pas la validation
+        if self.augment and self.noise_level > 0.0:
             noise = torch.randn_like(clean_tensor) * self.noise_level
             noisy_tensor = clean_tensor + noise
             noisy_tensor = torch.clamp(noisy_tensor, 0.0, 1.0)

@@ -1,12 +1,3 @@
-"""Loss factory and implementations for VAE training.
-
-Provides multiple loss functions optimized for wireframe UI/UX learning:
-- SimpleVAELoss: Basic L1/MSE reconstruction + KLD
-- PerceptualVAELoss: SSIM + Gradient + L1 + KLD (for structure preservation)
-- ContrastiveVAELoss: Adds latent space regularization for clustering
-
-Use `get_vae_loss(config)` to instantiate the appropriate loss module.
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
