@@ -297,49 +297,14 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         k = len(archetype_names)
         logging.info(f"Loaded {k} archetypes: {', '.join(archetype_names)}")
     
-    # 3. Appliquer k-means sur le dataset d'entraînement
-    logging.info(f"Applying k-means with k={k} on training latents...")
-    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-    train_cluster_labels = kmeans.fit_predict(train_latents)
-    
-    # 4. Cluster Metrics sur dataset d'entraînement
-    cluster_metrics = compute_cluster_metrics(train_latents, train_cluster_labels)
-    for key, value in cluster_metrics.items():
-        writer.add_scalar(f"latent/{key}", value, epoch)
-    
-    logging.info(f"Epoch {epoch} Cluster Metrics (k-means on train): {cluster_metrics}")
-    
-    # 5. Si archetypes disponibles, vérifier correspondance cluster ↔ archetype
-    if archetype_latents is not None:
-        logging.info("Checking cluster-archetype correspondence...")
-        # Assigner chaque archetype au cluster le plus proche (centroïd)
-        archetype_cluster_assignments = kmeans.predict(archetype_latents)
-        
-        # Compter combien d'archetypes par cluster
-        cluster_to_archetypes = {}
-        for arch_idx, cluster_id in enumerate(archetype_cluster_assignments):
-            if cluster_id not in cluster_to_archetypes:
-                cluster_to_archetypes[cluster_id] = []
-            cluster_to_archetypes[cluster_id].append(archetype_names[arch_idx])
-        
-        # Logger la correspondance
-        for cluster_id in range(k):
-            archs = cluster_to_archetypes.get(cluster_id, [])
-            if len(archs) == 0:
-                logging.info(f"  Cluster {cluster_id}: [X] No archetype assigned")
-            elif len(archs) == 1:
-                logging.info(f"  Cluster {cluster_id}: [OK] {archs[0]}")
-            else:
-                logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
-    
-    # Compute latent density metrics
+    # 3. Compute latent density metrics (on full 128D space)
     density_metrics = compute_latent_density_metrics(train_latents, n_neighbors=5)
     for key, value in density_metrics.items():
         writer.add_scalar(f"latent/{key}", value, epoch)
     
     logging.info(f"Epoch {epoch} Density Metrics: {density_metrics}")
     
-    # 8. t-SNE/PCA Visualization du dataset d'entraînement avec clusters k-means
+    # 4. t-SNE/PCA Visualization with k-means on 2D projections
     try:
         from sklearn.manifold import TSNE
         from sklearn.decomposition import PCA
@@ -348,35 +313,87 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         n_samples = len(train_latents)
         perplexity = min(30.0, max(5.0, n_samples / 3))  # Adaptive perplexity based on sample size
         
-        # Generate PCA and t-SNE visualizations
-        logging.info(f"Generating PCA visualization...")
+        # Generate PCA projection (2 principal components)
+        logging.info(f"Generating PCA projection (2 components)...")
         pca = PCA(n_components=2, random_state=42)
         z_pca = pca.fit_transform(train_latents)
+        logging.info(f"PCA explained variance: {pca.explained_variance_ratio_[0]:.3f}, {pca.explained_variance_ratio_[1]:.3f}")
         
         # Calculer t-SNE seulement si assez de samples
         if n_samples >= 50:
-            logging.info(f"Generating t-SNE visualization with perplexity={perplexity:.1f} (n_samples={n_samples})")
+            logging.info(f"Generating t-SNE projection with perplexity={perplexity:.1f} (n_samples={n_samples})")
             tsne = TSNE(n_components=2, random_state=42, perplexity=perplexity, 
                        init="pca", learning_rate="auto")
             z_tsne = tsne.fit_transform(train_latents)
             visualizations = [("PCA", z_pca, pca), ("t-SNE", z_tsne, None)]
         else:
             logging.info(f"Skipping t-SNE (n_samples={n_samples} < 50)")
-            visualizations = [("PCA", z_pca, pca)]
+            visualizations = [("PCA", z_pca, None)]
         
         # Générer une figure pour chaque visualisation
         colors = cm.tab20(np.linspace(0, 1, k))
         
-        for viz_method, z_embedded, fitted_model in visualizations:
+        for viz_method, z_embedded, projection_model in visualizations:
+            # IMPORTANT: Appliquer k-means sur le plan 2D (les 2 composantes principales)
+            # pour que les clusters correspondent exactement à ce qu'on voit visuellement
+            logging.info(f"Applying k-means (k={k}) on {viz_method} 2D projection...")
+            kmeans_2d = KMeans(n_clusters=k, random_state=42, n_init=10)
+            train_cluster_labels_2d = kmeans_2d.fit_predict(z_embedded)
+            
+            # Calculer les métriques de cluster sur le plan 2D
+            cluster_metrics_2d = compute_cluster_metrics(z_embedded, train_cluster_labels_2d)
+            for key, value in cluster_metrics_2d.items():
+                writer.add_scalar(f"latent/{viz_method.lower()}_{key}", value, epoch)
+            
+            logging.info(f"Epoch {epoch} {viz_method} Cluster Metrics (k-means on 2D): {cluster_metrics_2d}")
+            
+            # Si archetypes disponibles, les projeter et assigner aux clusters
+            cluster_to_archetypes_2d = {}
+            archetype_cluster_assignments_2d = None
+            arch_embedded = None
+            
+            if archetype_latents is not None:
+                logging.info(f"Projecting archetypes to {viz_method} space and assigning to clusters...")
+                
+                # Projeter les archetypes sur le même plan 2D
+                if projection_model is not None:  # PCA
+                    arch_embedded = projection_model.transform(archetype_latents)
+                else:  # t-SNE - utiliser KNN pour approximation
+                    from sklearn.neighbors import NearestNeighbors
+                    nbrs = NearestNeighbors(n_neighbors=1).fit(train_latents)
+                    _, indices = nbrs.kneighbors(archetype_latents)
+                    arch_embedded = z_embedded[indices.flatten()]
+                
+                # Assigner chaque archetype au cluster le plus proche (sur le plan 2D)
+                archetype_cluster_assignments_2d = kmeans_2d.predict(arch_embedded)
+                
+                # Compter combien d'archetypes par cluster
+                for arch_idx, cluster_id in enumerate(archetype_cluster_assignments_2d):
+                    if cluster_id not in cluster_to_archetypes_2d:
+                        cluster_to_archetypes_2d[cluster_id] = []
+                    cluster_to_archetypes_2d[cluster_id].append(archetype_names[arch_idx])
+                
+                # Logger la correspondance
+                logging.info(f"{viz_method} Cluster-Archetype Correspondence:")
+                for cluster_id in range(k):
+                    archs = cluster_to_archetypes_2d.get(cluster_id, [])
+                    if len(archs) == 0:
+                        logging.info(f"  Cluster {cluster_id}: [X] No archetype assigned")
+                    elif len(archs) == 1:
+                        logging.info(f"  Cluster {cluster_id}: [OK] {archs[0]}")
+                    else:
+                        logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
+            
+            # Visualisation
             fig, ax = plt.subplots(figsize=(14, 10))
             
-            # Colorier par cluster k-means
+            # Colorier par cluster k-means (calculé sur le plan 2D)
             for cluster_id in range(k):
-                mask = train_cluster_labels == cluster_id
+                mask = train_cluster_labels_2d == cluster_id
                 if np.sum(mask) > 0:
                     # Nom du cluster (archetype correspondant si disponible)
-                    if archetype_latents is not None and cluster_id in cluster_to_archetypes:
-                        archs = cluster_to_archetypes[cluster_id]
+                    if archetype_latents is not None and cluster_id in cluster_to_archetypes_2d:
+                        archs = cluster_to_archetypes_2d[cluster_id]
                         label = f"C{cluster_id}: {archs[0]}" if len(archs) == 1 else f"C{cluster_id}: {len(archs)} archs"
                     else:
                         label = f"Cluster {cluster_id}"
@@ -385,17 +402,9 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
                               c=[colors[cluster_id]], label=label, s=30, alpha=0.6, edgecolors='none')
             
             # Superposer les archetypes (étoiles colorées par cluster)
-            if archetype_latents is not None:
-                if fitted_model is not None:  # PCA
-                    arch_embedded = fitted_model.transform(archetype_latents)
-                else:  # t-SNE - utiliser KNN
-                    from sklearn.neighbors import NearestNeighbors
-                    nbrs = NearestNeighbors(n_neighbors=1).fit(train_latents)
-                    _, indices = nbrs.kneighbors(archetype_latents)
-                    arch_embedded = z_embedded[indices.flatten()]
-                
-                # Colorier chaque archetype selon son cluster k-means
-                for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_assignments)):
+            if archetype_latents is not None and arch_embedded is not None:
+                # Colorier chaque archetype selon son cluster k-means (sur le plan 2D)
+                for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_assignments_2d)):
                     ax.scatter(arch_embedded[i, 0], arch_embedded[i, 1], 
                               c=[colors[cluster_id]], marker='*', s=500, 
                               edgecolors='white', linewidths=2, zorder=10)
