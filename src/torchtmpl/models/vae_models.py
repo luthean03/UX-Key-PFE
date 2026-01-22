@@ -172,12 +172,11 @@ class VAE(nn.Module):
         self.use_skip_connections = config.get("use_skip_connections", False)
 
         # Encoder avec stockage des features intermédiaires
-        self.enc_conv1 = nn.Sequential(
-            nn.Conv2d(1, 64, 7, 2, 3, bias=False),
-            nn.GroupNorm(32, 64),
-            nn.ReLU(True),
-            nn.MaxPool2d(3, 2, 1)
-        )
+        self.enc_conv1_conv = nn.Conv2d(1, 64, 7, 2, 3, bias=False)
+        self.enc_conv1_gn = MaskedGroupNorm(8, 64)  # 8 groupes = 8 canaux/groupe
+        self.enc_conv1_relu = nn.ReLU(True)
+        self.enc_conv1_pool = nn.MaxPool2d(3, 2, 1)
+        
         self.enc_block1 = ResidualBlock(64, 128, stride=2)   # → features 128 canaux
         self.enc_block2 = ResidualBlock(128, 256, stride=2)  # → features 256 canaux
         self.enc_block3 = ResidualBlock(256, 512, stride=2)  # → features 512 canaux
@@ -296,11 +295,11 @@ class VAE(nn.Module):
         
         # --- Encoder avec propagation du masque ---
         
-        # enc_conv1 (manuel car c'est un Sequential dans ton code actuel)
-        e1 = self.enc_conv1[0](x) # Conv
-        e1 = self.enc_conv1[1](e1) # GN (Standard)
-        e1 = self.enc_conv1[2](e1) # ReLU
-        e1 = self.enc_conv1[3](e1) # MaxPool
+        # enc_conv1 avec MaskedGroupNorm
+        e1 = self.enc_conv1_conv(x)
+        e1 = self.enc_conv1_gn(e1, mask)  # Masked GN
+        e1 = self.enc_conv1_relu(e1)
+        e1 = self.enc_conv1_pool(e1)
         
         # Maintenant on a un masque 1/2 taille (MaxPool stride 2)
         if mask is not None:
@@ -386,10 +385,10 @@ class VAE(nn.Module):
             z: (B, latent_dim) sampled latent code
         """
         # Encoder avec propagation du masque
-        e1 = self.enc_conv1[0](x)  # Conv
-        e1 = self.enc_conv1[1](e1)  # GN
-        e1 = self.enc_conv1[2](e1)  # ReLU
-        e1 = self.enc_conv1[3](e1)  # MaxPool
+        e1 = self.enc_conv1_conv(x)
+        e1 = self.enc_conv1_gn(e1, mask)  # Masked GN
+        e1 = self.enc_conv1_relu(e1)
+        e1 = self.enc_conv1_pool(e1)
         
         if mask is not None:
             m1 = F.interpolate(mask, size=e1.shape[2:], mode='nearest')
