@@ -111,7 +111,7 @@ early_stopping:
 test:
   test_input_dir: "test/test_input"          # Directory containing test images
   test_output_dir: "test/test_output"        # Output directory for comparison grids
-  model_path: "logs/VAE_0/last_model.pt"     # Path to trained model checkpoint
+  model_path: "logs/VAE_3/last_model.pt"     # Path to trained model checkpoint
 
 # Interpolation configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml interpolate
