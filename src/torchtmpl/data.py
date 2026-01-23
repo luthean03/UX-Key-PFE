@@ -245,22 +245,45 @@ def get_dataloaders(data_config, use_cuda):
     noise = float(data_config.get("noise_level", 0.0))
     # Safety limit (2048 pixels height is sufficient to learn patterns)
     max_h = int(data_config.get("max_height", 2048))
-    data_dir = data_config.get('data_dir', './')
-    files = [f for f in os.listdir(data_dir) if f.endswith('_linear.png')]
-    if len(files) == 0:
-        files = [f for f in os.listdir(data_dir) if f.lower().endswith('.png')]
-    if len(files) == 0:
-        raise ValueError(f"No PNG files found in data_dir={data_dir}")
+    
+    # Support both old (data_dir with split) and new (train_dir/valid_dir) formats
+    train_dir = data_config.get('train_dir')
+    valid_dir = data_config.get('valid_dir')
+    
+    if train_dir and valid_dir:
+        # New format: separate train/valid directories
+        train_files = [f for f in os.listdir(train_dir) if f.endswith('_linear.png')]
+        if len(train_files) == 0:
+            train_files = [f for f in os.listdir(train_dir) if f.lower().endswith('.png')]
+        
+        valid_files = [f for f in os.listdir(valid_dir) if f.endswith('_linear.png')]
+        if len(valid_files) == 0:
+            valid_files = [f for f in os.listdir(valid_dir) if f.lower().endswith('.png')]
+        
+        if len(train_files) == 0:
+            raise ValueError(f"No PNG files found in train_dir={train_dir}")
+        if len(valid_files) == 0:
+            raise ValueError(f"No PNG files found in valid_dir={valid_dir}")
+            
+    else:
+        # Old format: single data_dir with automatic split
+        data_dir = data_config.get('data_dir', './')
+        files = [f for f in os.listdir(data_dir) if f.endswith('_linear.png')]
+        if len(files) == 0:
+            files = [f for f in os.listdir(data_dir) if f.lower().endswith('.png')]
+        if len(files) == 0:
+            raise ValueError(f"No PNG files found in data_dir={data_dir}")
 
-    # Shuffle and split files into train/valid so we can instantiate datasets
-    valid_ratio = float(data_config.get("valid_ratio", 0.2))
-    # Reproducible split: allow overriding via `seed` in config
-    seed = int(data_config.get('seed', 42))
-    rng = random.Random(seed)
-    rng.shuffle(files)
-    train_size = int((1.0 - valid_ratio) * len(files))
-    train_files = files[:train_size]
-    valid_files = files[train_size:]
+        # Shuffle and split files into train/valid
+        valid_ratio = float(data_config.get("valid_ratio", 0.2))
+        seed = int(data_config.get('seed', 42))
+        rng = random.Random(seed)
+        rng.shuffle(files)
+        train_size = int((1.0 - valid_ratio) * len(files))
+        train_files = files[:train_size]
+        valid_files = files[train_size:]
+        train_dir = data_dir
+        valid_dir = data_dir
 
     # Read augmentation params from config (with defaults)
     augment_flag = bool(data_config.get('augment', True))
@@ -274,7 +297,7 @@ def get_dataloaders(data_config, use_cuda):
 
     # Create dataset instances with augment enabled for train and disabled for validation
     train_dataset = VariableSizeDataset(
-        root_dir=data_dir,
+        root_dir=train_dir,
         noise_level=noise,
         max_height=max_h,
         augment=augment_flag,
@@ -288,7 +311,7 @@ def get_dataloaders(data_config, use_cuda):
         contrast_jitter=contrast_jitter,
     )
     valid_dataset = VariableSizeDataset(
-        root_dir=data_dir,
+        root_dir=valid_dir,
         noise_level=0.0,
         max_height=max_h,
         augment=False,
@@ -309,6 +332,7 @@ def get_dataloaders(data_config, use_cuda):
 
     batch_size = int(data_config.get('batch_size', 1))
     num_workers = int(data_config.get('num_workers', 0))
+    seed = int(data_config.get('seed', 42))
     g = torch.Generator()
     g.manual_seed(seed)
 

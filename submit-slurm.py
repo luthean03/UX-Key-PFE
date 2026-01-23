@@ -9,7 +9,7 @@ import shlex
 import yaml
 
 
-def makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, extra_args: str = ""):
+def makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, extra_args: str = "", train_src="None", valid_src="None"):
     exclude_list = "dani[01-17],tx[00-16],sh[10-19],sh00"
     return f"""#!/bin/bash
 
@@ -51,14 +51,40 @@ if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then
     fi
 
     # Copy training dataset to node (from YAML config path)
-    SRC_DATA="{data_src}"
-    if [[ "$SRC_DATA" != /* ]]; then
-        SRC_DATA="$current_dir/$SRC_DATA"
-    fi
-    if [[ -d "$SRC_DATA" ]]; then
-        echo "[OK] Copying training dataset to node from $SRC_DATA..."
-        rsync -r "$SRC_DATA/" "$TMPDIR/code/vae_dataset/"
-        echo "[OK] Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
+    # Support both old format (data_dir) and new format (train_dir/valid_dir)
+    SRC_TRAIN="{train_src}"
+    SRC_VALID="{valid_src}"
+    
+    if [[ -n "$SRC_TRAIN" && "$SRC_TRAIN" != "None" ]]; then
+        # New format: separate train/valid directories
+        if [[ "$SRC_TRAIN" != /* ]]; then
+            SRC_TRAIN="$current_dir/$SRC_TRAIN"
+        fi
+        if [[ -d "$SRC_TRAIN" ]]; then
+            echo "[OK] Copying training dataset from $SRC_TRAIN..."
+            rsync -r "$SRC_TRAIN/" "$TMPDIR/code/vae_dataset_train/"
+            echo "[OK] Train dataset copied: $(find $TMPDIR/code/vae_dataset_train -type f | wc -l) files"
+        fi
+        
+        if [[ "$SRC_VALID" != /* ]]; then
+            SRC_VALID="$current_dir/$SRC_VALID"
+        fi
+        if [[ -d "$SRC_VALID" ]]; then
+            echo "[OK] Copying validation dataset from $SRC_VALID..."
+            rsync -r "$SRC_VALID/" "$TMPDIR/code/vae_dataset_valid/"
+            echo "[OK] Valid dataset copied: $(find $TMPDIR/code/vae_dataset_valid -type f | wc -l) files"
+        fi
+    else
+        # Old format: single data_dir
+        SRC_DATA="{data_src}"
+        if [[ "$SRC_DATA" != /* ]]; then
+            SRC_DATA="$current_dir/$SRC_DATA"
+        fi
+        if [[ -d "$SRC_DATA" ]]; then
+            echo "[OK] Copying dataset from $SRC_DATA (old format)..."
+            rsync -r "$SRC_DATA/" "$TMPDIR/code/vae_dataset/"
+            echo "[OK] Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
+        fi
     fi
 else
     echo "Skipping dataset/archetypes copy (not needed for {command})"
@@ -114,23 +140,52 @@ if logdir:
 
 # Patch data dir (use local node dataset if available)
 data_cfg = cfg.get('data') or dict()
-data_dir = data_cfg.get('data_dir')
-if data_dir:
-    dd_path = pathlib.Path(data_dir).expanduser()
-    # Priority 1: Local dataset on node ($TMPDIR/code/vae_dataset)
-    local_dataset = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'vae_dataset'
-    if local_dataset.exists():
-        data_cfg['data_dir'] = str(local_dataset)
-        print(f"[OK] Using local dataset on node: {{local_dataset}}")
-    # Priority 2: Absolute path (shared filesystem - slower)
-    elif dd_path.is_absolute():
-        data_cfg['data_dir'] = str(dd_path)
-        print(f"[!] Using shared filesystem (slower): {{dd_path}}")
-    # Priority 3: Relative path from launch directory
+
+# Support new format (train_dir/valid_dir)
+train_dir = data_cfg.get('train_dir')
+valid_dir = data_cfg.get('valid_dir')
+
+if train_dir and valid_dir:
+    # New format: separate train/valid directories
+    local_train = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'vae_dataset_train'
+    local_valid = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'vae_dataset_valid'
+    
+    if local_train.exists():
+        data_cfg['train_dir'] = str(local_train)
+        print(f"[OK] Using local train dataset on node: {{local_train}}")
     else:
-        data_cfg['data_dir'] = str(base / dd_path)
-        print(f"[!] Using shared filesystem (slower): {{base / dd_path}}")
+        train_path = pathlib.Path(train_dir).expanduser()
+        if not train_path.is_absolute():
+            data_cfg['train_dir'] = str(base / train_path)
+    
+    if local_valid.exists():
+        data_cfg['valid_dir'] = str(local_valid)
+        print(f"[OK] Using local valid dataset on node: {{local_valid}}")
+    else:
+        valid_path = pathlib.Path(valid_dir).expanduser()
+        if not valid_path.is_absolute():
+            data_cfg['valid_dir'] = str(base / valid_path)
+    
     cfg['data'] = data_cfg
+else:
+    # Old format: single data_dir
+    data_dir = data_cfg.get('data_dir')
+    if data_dir:
+        dd_path = pathlib.Path(data_dir).expanduser()
+        # Priority 1: Local dataset on node ($TMPDIR/code/vae_dataset)
+        local_dataset = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'vae_dataset'
+        if local_dataset.exists():
+            data_cfg['data_dir'] = str(local_dataset)
+            print(f"[OK] Using local dataset on node: {{local_dataset}}")
+        # Priority 2: Absolute path (shared filesystem - slower)
+        elif dd_path.is_absolute():
+            data_cfg['data_dir'] = str(dd_path)
+            print(f"[!] Using shared filesystem (slower): {{dd_path}}")
+        # Priority 3: Relative path from launch directory
+        else:
+            data_cfg['data_dir'] = str(base / dd_path)
+            print(f"[!] Using shared filesystem (slower): {{base / dd_path}}")
+        cfg['data'] = data_cfg
 
 # Patch archetypes dir (same logic as dataset)
 archetypes_dir = data_cfg.get('archetypes_dir')
@@ -332,14 +387,34 @@ with open(configpath, "rb") as fp:
 with open(configpath, "r") as fp:
     try:
         cfg_rsync = yaml.safe_load(fp)
-        data_src = cfg_rsync.get('data', {}).get('data_dir', 'vae_dataset_scaled')
-        archetypes_src = cfg_rsync.get('data', {}).get('archetypes_dir', 'archetypes_png')
+        data_cfg = cfg_rsync.get('data', {})
+        
+        # Support both old format (data_dir) and new format (train_dir/valid_dir)
+        train_src = data_cfg.get('train_dir')
+        valid_src = data_cfg.get('valid_dir')
+        
+        if not train_src or not valid_src:
+            # Fallback to old format
+            data_src = data_cfg.get('data_dir', 'vae_dataset_scaled')
+            train_src = None
+            valid_src = None
+        else:
+            data_src = None
+        
+        archetypes_src = data_cfg.get('archetypes_dir', 'archetypes_png')
     except Exception as e:
         print(f"Warning: Could not parse paths from yaml ({e}), using default fallback.")
         data_src = 'vae_dataset_scaled'
+        train_src = None
+        valid_src = None
         archetypes_src = 'archetypes_png'
 
-job = makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, extra_args=extra_args)
+job = makejob(commit_id, config_b64, nruns, command, 
+              data_src if data_src else 'None', 
+              archetypes_src, 
+              extra_args=extra_args,
+              train_src=train_src if train_src else 'None',
+              valid_src=valid_src if valid_src else 'None')
 if dry_run:
     print(job)
     sys.exit(0)

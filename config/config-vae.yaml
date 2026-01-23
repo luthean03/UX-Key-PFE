@@ -4,11 +4,11 @@
 resume: null 
 
 data:
-  data_dir: "dataset/vae_dataset_scaled"
-  archetypes_dir: "dataset/archetypes_png_scaled"  # Labeled wireframes for latent metrics
+  train_dir: "dataset/vae_dataset_pc/train_scaled"
+  valid_dir: "dataset/vae_dataset_pc/validation_scaled"
+  archetypes_dir: "dataset/archetypes_phone/png"  # Labeled wireframes for latent metrics
   batch_size: 16                    # SmartBatchSampler groups similar-sized images to minimize padding
   num_workers: 8                    # I/O parallelization
-  valid_ratio: 0.2                  # 80/20 train/valid split
   seed: 42                          # Reproducibility
   
   # Memory management
@@ -25,7 +25,7 @@ data:
   perspective_distortion_scale: 0.12  # Perspective distortion magnitude
   
   # Additional augmentations
-  rotation_degrees: 5               # Random rotation range (±5°)
+  rotation_degrees: 2               # Random rotation range (±5°)
   brightness_jitter: 0.1            # Brightness variation (±10%)
   contrast_jitter: 0.1              # Contrast variation (±10%)
 

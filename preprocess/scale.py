@@ -36,6 +36,6 @@ def batch_scale_images(image_dir, output_dir, scale_factor=0.5, max_workers=12):
             pass
 
 if __name__ == "__main__":
-    image_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png"
-    output_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE/archetypes_png_scaled"
+    image_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/vae_dataset_pc/validation"
+    output_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE//dataset/vae_dataset_pc/validation_scaled"
     batch_scale_images(image_dir, output_dir, scale_factor=0.2, max_workers=8)
