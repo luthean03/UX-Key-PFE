@@ -33,6 +33,10 @@ class MaskedGroupNorm(nn.Module):
         B, C, H, W = x.shape
         G = self.num_groups
         
+        # Resize mask to match x dimensions if needed
+        if mask.shape[2:] != (H, W):
+            mask = F.interpolate(mask, size=(H, W), mode='nearest')
+        
         # Reshape to separate groups
         x_g = x.view(B, G, C // G, H, W)
         mask_g = mask.view(B, 1, 1, H, W)  # Broadcast over groups
