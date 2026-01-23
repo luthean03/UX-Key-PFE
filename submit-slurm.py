@@ -9,7 +9,7 @@ import shlex
 import yaml
 
 
-def makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, extra_args: str = "", train_src="None", valid_src="None"):
+def makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, extra_args: str = "", train_src="None", valid_src="None", test_input_src="None"):
     exclude_list = "dani[01-17],tx[00-16],sh[10-19],sh00"
     return f"""#!/bin/bash
 
@@ -88,6 +88,21 @@ if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then
     fi
 else
     echo "Skipping dataset/archetypes copy (not needed for {command})"
+fi
+
+# Copy test input directory for test/interpolate commands
+if [[ "{command}" == "test" || "{command}" == "train_test" || "{command}" == "interpolate" ]]; then
+    TEST_INPUT="{test_input_src}"
+    if [[ -n "$TEST_INPUT" && "$TEST_INPUT" != "None" ]]; then
+        if [[ "$TEST_INPUT" != /* ]]; then
+            TEST_INPUT="$current_dir/$TEST_INPUT"
+        fi
+        if [[ -d "$TEST_INPUT" ]]; then
+            echo "[OK] Copying test input directory from $TEST_INPUT..."
+            rsync -r "$TEST_INPUT/" "$TMPDIR/code/test_input/"
+            echo "[OK] Test input copied: $(find $TMPDIR/code/test_input -type f | wc -l) files"
+        fi
+    fi
 fi
 
 echo "Checking out the correct version of the code commit_id {commit_id}"
@@ -221,6 +236,18 @@ if ckpt:
     ckpt_path = pathlib.Path(ckpt).expanduser()
     if not ckpt_path.is_absolute():
         test_cfg['checkpoint'] = str(base / ckpt_path)
+
+# Patch test input directory (use local copy if available)
+test_input_dir = test_cfg.get('test_input_dir')
+if test_input_dir:
+    local_test_input = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'test_input'
+    if local_test_input.exists():
+        test_cfg['test_input_dir'] = str(local_test_input)
+        print(f"[OK] Using local test input on node: {{local_test_input}}")
+    else:
+        test_input_path = pathlib.Path(test_input_dir).expanduser()
+        if not test_input_path.is_absolute():
+            test_cfg['test_input_dir'] = str(base / test_input_path)
 
 cfg['test'] = test_cfg
 
@@ -402,19 +429,26 @@ with open(configpath, "r") as fp:
             data_src = None
         
         archetypes_src = data_cfg.get('archetypes_dir', 'archetypes_png')
+        
+        # Extract test input directory
+        test_cfg = cfg_rsync.get('test', {})
+        test_input_src = test_cfg.get('test_input_dir')
+        
     except Exception as e:
         print(f"Warning: Could not parse paths from yaml ({e}), using default fallback.")
         data_src = 'vae_dataset_scaled'
         train_src = None
         valid_src = None
         archetypes_src = 'archetypes_png'
+        test_input_src = None
 
 job = makejob(commit_id, config_b64, nruns, command, 
               data_src if data_src else 'None', 
               archetypes_src, 
               extra_args=extra_args,
               train_src=train_src if train_src else 'None',
-              valid_src=valid_src if valid_src else 'None')
+              valid_src=valid_src if valid_src else 'None',
+              test_input_src=test_input_src if test_input_src else 'None')
 if dry_run:
     print(job)
     sys.exit(0)
