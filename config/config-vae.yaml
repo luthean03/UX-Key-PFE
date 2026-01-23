@@ -25,9 +25,9 @@ data:
   perspective_distortion_scale: 0.12  # Perspective distortion magnitude
   
   # Additional augmentations
-  rotation_degrees: 2               # Random rotation range (±5°)
-  brightness_jitter: 0.1            # Brightness variation (±10%)
-  contrast_jitter: 0.1              # Contrast variation (±10%)
+  rotation_degrees: 2               # Random rotation range
+  brightness_jitter: 0.1            # Brightness variation
+  contrast_jitter: 0.1              # Contrast variation
 
 # Model architecture
 model:
@@ -109,9 +109,9 @@ early_stopping:
 # Test (inference) configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml test
 test:
-  test_input_dir: "test/test_input"          # Directory containing test images
+  test_input_dir: "dataset/vae_dataset_pc/validation_scaled"          # Directory containing test images
   test_output_dir: "test/test_output"        # Output directory for comparison grids
-  model_path: "logs/VAE_3/last_model.pt"     # Path to trained model checkpoint
+  model_path: "logs/VAE_5/last_model.pt"     # Path to trained model checkpoint
 
 # Interpolation configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml interpolate
