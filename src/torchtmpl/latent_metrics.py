@@ -284,7 +284,8 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         return
     
     train_latents = np.concatenate(train_latents, axis=0)  # (N, latent_dim)
-    logging.info(f"Encoded {len(train_latents)} training samples")
+    latent_dim = train_latents.shape[1]  # Get actual latent dimension from data
+    logging.info(f"Encoded {len(train_latents)} training samples (latent_dim={latent_dim})")
     
     # 2. Charger archetypes pour déterminer k
     archetype_latents, archetype_labels, archetype_names, archetype_images = load_archetypes(archetypes_dir, model, device, max_height)
@@ -297,14 +298,51 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         k = len(archetype_names)
         logging.info(f"Loaded {k} archetypes: {', '.join(archetype_names)}")
     
-    # 3. Compute latent density metrics (on full 128D space)
+    # 3. Compute latent density metrics (on full latent space)
     density_metrics = compute_latent_density_metrics(train_latents, n_neighbors=5)
     for key, value in density_metrics.items():
         writer.add_scalar(f"latent/{key}", value, epoch)
     
     logging.info(f"Epoch {epoch} Density Metrics: {density_metrics}")
     
-    # 4. t-SNE/PCA Visualization with k-means on 2D projections
+    # 4. K-means clustering on latent space before dimensionality reduction
+    logging.info(f"Applying k-means (k={k}) on FULL {latent_dim}D latent space...")
+    kmeans_full = KMeans(n_clusters=k, random_state=42, n_init=10)
+    train_cluster_labels_full = kmeans_full.fit_predict(train_latents)
+    
+    # Compute cluster metrics on full space
+    cluster_metrics_full = compute_cluster_metrics(train_latents, train_cluster_labels_full)
+    for key, value in cluster_metrics_full.items():
+        writer.add_scalar(f"latent/full_{latent_dim}d_{key}", value, epoch)
+    
+    logging.info(f"Epoch {epoch} Full {latent_dim}D Cluster Metrics (k-means on {latent_dim}D): {cluster_metrics_full}")
+    
+    # 5. Assign archetypes to clusters (on full latent space)
+    cluster_to_archetypes_full = {}
+    archetype_cluster_assignments_full = None
+    
+    if archetype_latents is not None:
+        logging.info(f"Assigning archetypes to clusters in full {latent_dim}D space...")
+        archetype_cluster_assignments_full = kmeans_full.predict(archetype_latents)
+        
+        # Count archetypes per cluster
+        for arch_idx, cluster_id in enumerate(archetype_cluster_assignments_full):
+            if cluster_id not in cluster_to_archetypes_full:
+                cluster_to_archetypes_full[cluster_id] = []
+            cluster_to_archetypes_full[cluster_id].append(archetype_names[arch_idx])
+        
+        # Log cluster-archetype correspondence
+        logging.info(f"Full {latent_dim}D Cluster-Archetype Correspondence:")
+        for cluster_id in range(k):
+            archs = cluster_to_archetypes_full.get(cluster_id, [])
+            if len(archs) == 0:
+                logging.info(f"  Cluster {cluster_id}: [X] No archetype assigned")
+            elif len(archs) == 1:
+                logging.info(f"  Cluster {cluster_id}: [OK] {archs[0]}")
+            else:
+                logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
+    
+    # 6. t-SNE/PCA Visualization with k-means clusters from full latent space
     try:
         from sklearn.manifold import TSNE
         from sklearn.decomposition import PCA
@@ -334,26 +372,14 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         colors = cm.tab20(np.linspace(0, 1, k))
         
         for viz_method, z_embedded, projection_model in visualizations:
-            # IMPORTANT: Appliquer k-means sur le plan 2D (les 2 composantes principales)
-            # pour que les clusters correspondent exactement à ce qu'on voit visuellement
-            logging.info(f"Applying k-means (k={k}) on {viz_method} 2D projection...")
-            kmeans_2d = KMeans(n_clusters=k, random_state=42, n_init=10)
-            train_cluster_labels_2d = kmeans_2d.fit_predict(z_embedded)
+            # Use cluster labels from FULL latent space k-means (not 2D)
+            logging.info(f"Visualizing {viz_method} projection with clusters from full {latent_dim}D k-means...")
             
-            # Calculer les métriques de cluster sur le plan 2D
-            cluster_metrics_2d = compute_cluster_metrics(z_embedded, train_cluster_labels_2d)
-            for key, value in cluster_metrics_2d.items():
-                writer.add_scalar(f"latent/{viz_method.lower()}_{key}", value, epoch)
-            
-            logging.info(f"Epoch {epoch} {viz_method} Cluster Metrics (k-means on 2D): {cluster_metrics_2d}")
-            
-            # Si archetypes disponibles, les projeter et assigner aux clusters
-            cluster_to_archetypes_2d = {}
-            archetype_cluster_assignments_2d = None
+            # Project archetypes to 2D space for visualization
             arch_embedded = None
             
             if archetype_latents is not None:
-                logging.info(f"Projecting archetypes to {viz_method} space and assigning to clusters...")
+                logging.info(f"Projecting archetypes to {viz_method} space...")
                 
                 # Projeter les archetypes sur le même plan 2D
                 if projection_model is not None:  # PCA
@@ -363,37 +389,17 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
                     nbrs = NearestNeighbors(n_neighbors=1).fit(train_latents)
                     _, indices = nbrs.kneighbors(archetype_latents)
                     arch_embedded = z_embedded[indices.flatten()]
-                
-                # Assigner chaque archetype au cluster le plus proche (sur le plan 2D)
-                archetype_cluster_assignments_2d = kmeans_2d.predict(arch_embedded)
-                
-                # Compter combien d'archetypes par cluster
-                for arch_idx, cluster_id in enumerate(archetype_cluster_assignments_2d):
-                    if cluster_id not in cluster_to_archetypes_2d:
-                        cluster_to_archetypes_2d[cluster_id] = []
-                    cluster_to_archetypes_2d[cluster_id].append(archetype_names[arch_idx])
-                
-                # Logger la correspondance
-                logging.info(f"{viz_method} Cluster-Archetype Correspondence:")
-                for cluster_id in range(k):
-                    archs = cluster_to_archetypes_2d.get(cluster_id, [])
-                    if len(archs) == 0:
-                        logging.info(f"  Cluster {cluster_id}: [X] No archetype assigned")
-                    elif len(archs) == 1:
-                        logging.info(f"  Cluster {cluster_id}: [OK] {archs[0]}")
-                    else:
-                        logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
             
             # Visualisation
             fig, ax = plt.subplots(figsize=(14, 10))
             
-            # Colorier par cluster k-means (calculé sur le plan 2D)
+            # Colorier par cluster k-means (calculé sur l'espace latent complet)
             for cluster_id in range(k):
-                mask = train_cluster_labels_2d == cluster_id
+                mask = train_cluster_labels_full == cluster_id
                 if np.sum(mask) > 0:
                     # Nom du cluster (archetype correspondant si disponible)
-                    if archetype_latents is not None and cluster_id in cluster_to_archetypes_2d:
-                        archs = cluster_to_archetypes_2d[cluster_id]
+                    if archetype_latents is not None and cluster_id in cluster_to_archetypes_full:
+                        archs = cluster_to_archetypes_full[cluster_id]
                         label = f"C{cluster_id}: {archs[0]}" if len(archs) == 1 else f"C{cluster_id}: {len(archs)} archs"
                     else:
                         label = f"Cluster {cluster_id}"
@@ -403,8 +409,8 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             
             # Superposer les archetypes (étoiles colorées par cluster)
             if archetype_latents is not None and arch_embedded is not None:
-                # Colorier chaque archetype selon son cluster k-means (sur le plan 2D)
-                for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_assignments_2d)):
+                # Colorier chaque archetype selon son cluster k-means (sur l'espace latent complet)
+                for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_assignments_full)):
                     ax.scatter(arch_embedded[i, 0], arch_embedded[i, 1], 
                               c=[colors[cluster_id]], marker='*', s=500, 
                               edgecolors='white', linewidths=2, zorder=10)
@@ -414,7 +420,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
                                fontsize=8, ha='center', va='bottom', 
                                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
             
-            ax.set_title(f"Latent Space {viz_method} - Training Dataset (Epoch {epoch}, n={n_samples}, k={k})", fontsize=14)
+            ax.set_title(f"Latent Space {viz_method} - K-means on Full {latent_dim}D (Epoch {epoch}, n={n_samples}, k={k})", fontsize=14)
             ax.set_xlabel(f"{viz_method} Component 1")
             ax.set_ylabel(f"{viz_method} Component 2")
             ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=9, ncol=2)
