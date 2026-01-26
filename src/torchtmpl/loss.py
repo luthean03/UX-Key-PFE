@@ -173,12 +173,13 @@ class MultiScaleLoss(nn.Module):
 
 # ===================== SIMPLE VAE LOSS =====================
 class SimpleVAELoss(nn.Module):
-    """Simple VAE loss using L1 or MSE reconstruction + KLD.
+    """Simple VAE loss using L1, MSE, or SSIM reconstruction + KLD.
 
     Standard VAE ELBO loss: L = E[log p(x|z)] - beta * KL(q(z|x) || p(z))
     
     Normalisation:
-    - recon_loss: mean per pixel (~0.01-0.1 pour images [0,1] bien reconstruites)
+    - recon_loss (L1/MSE): sum over all pixels (~50,000 for 1M pixels)
+    - recon_loss (SSIM): (1 - SSIM) scaled by number of pixels for balance
     - kld_loss: sum over latent dims, mean over batch (standard VAE)
                 Typ. ~50-200 pour latent_dim=128 au début, ~10-50 après convergence
     
@@ -187,7 +188,7 @@ class SimpleVAELoss(nn.Module):
     - beta ~0.01-0.1 si on veut plus de régularisation (génération depuis N(0,I))
 
     Args:
-        mode: 'l1' or 'mse'
+        mode: 'l1', 'mse', or 'ssim'
         beta: weight for KLD (typ. 0.0001-0.01 pour clustering, 0.01-0.1 pour generation)
         scale: global scaling factor for display only
     """
@@ -197,6 +198,10 @@ class SimpleVAELoss(nn.Module):
         self.mode = mode
         self.beta = beta
         self.scale = scale
+        
+        # Initialize SSIM loss module if needed
+        if mode == 'ssim':
+            self.ssim_loss = SSIMLoss()
 
     def forward(self, recon_x, x, mu, logvar, mask=None):
         # Force FP32 for precision
@@ -210,7 +215,14 @@ class SimpleVAELoss(nn.Module):
         # - With sum: recon ~50,000 for 1M pixels, kld ~20 for 128 dims
         # - With beta=1: total ~50,020, recon naturally dominates
         # This prevents posterior collapse better than mean+small_beta
-        if mask is not None:
+        if self.mode == 'ssim':
+            # SSIM loss returns (1 - SSIM) in [0, 1] range
+            # Scale by number of pixels to match L1/MSE magnitude
+            ssim_loss_raw = self.ssim_loss(recon_x, x, mask)
+            # Scale to be comparable with sum-based losses
+            num_pixels = B * C * H * W
+            recon_loss = ssim_loss_raw * num_pixels
+        elif mask is not None:
             mask = mask.float()
             if self.mode == 'mse':
                 diff = ((recon_x - x) ** 2) * mask
@@ -223,7 +235,7 @@ class SimpleVAELoss(nn.Module):
         elif self.mode == 'l1':
             recon_loss = F.l1_loss(recon_x, x, reduction='sum')
         else:
-            raise ValueError(f"Unknown recon loss mode: {self.mode}")
+            raise ValueError(f"Unknown recon loss mode: {self.mode}. Use 'l1', 'mse', or 'ssim'.")
 
         # KL Divergence loss (standard VAE: sum over latent dims, mean over batch)
         # Formula: -0.5 * sum_j(1 + logvar_j - mu_j^2 - exp(logvar_j))
@@ -361,7 +373,7 @@ def get_vae_loss(loss_config: dict):
     """Factory: instantiate a loss module from config.
 
     Expected keys in loss_config:
-      - name: 'l1' | 'mse' | 'perceptual'
+      - name: 'l1' | 'mse' | 'ssim' | 'perceptual'
       - beta_kld: float (weight for KL divergence)
       - loss_scale: float (global scaling factor, default 1.0)
       - lambda_ssim: float (weight for SSIM, only for perceptual)
@@ -371,7 +383,7 @@ def get_vae_loss(loss_config: dict):
     beta = loss_config.get('beta_kld', loss_config.get('beta', 0.001))
     scale = float(loss_config.get('loss_scale', 1.0))
     
-    if name in ('l1', 'mse'):
+    if name in ('l1', 'mse', 'ssim'):
         return SimpleVAELoss(mode=name, beta=beta, scale=scale)
     
     if name == 'perceptual':
@@ -385,4 +397,4 @@ def get_vae_loss(loss_config: dict):
             scale=scale
         )
     
-    raise ValueError(f"Unknown loss name: {name}. Use 'l1', 'mse', or 'perceptual'.")
+    raise ValueError(f"Unknown loss name: {name}. Use 'l1', 'mse', 'ssim', or 'perceptual'.")
