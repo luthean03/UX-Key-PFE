@@ -49,7 +49,7 @@ model:
 # With sum reduction: reconstruction naturally dominates by ~1000x
 # Therefore beta_kld = 1.0 restores proper balance without posterior collapse
 loss:
-  name: "l1"                     # 'l1', 'mse', or 'perceptual'
+  name: "ssim"                     # 'l1', 'mse', or 'perceptual'
   beta_kld: 1.0                  # Using sum reduction: naturally balanced at 1.0
   loss_scale: 1                  # No scaling (natural values for debugging)
   warmup_epochs: 0               # KLD warmup epochs (prevents early posterior collapse)
