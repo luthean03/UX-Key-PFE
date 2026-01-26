@@ -382,11 +382,81 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
             )
         )
         
-        # Save as HTML
-        fig.write_html(str(output_path))
-        logging.info(f"[OK] Interactive 3D {viz_method} saved to {output_path}")
-        
-        return fig
+                # Save as HTML with click-to-open-image support
+                try:
+                        import json
+
+                        # Prepare base64 thumbnails for client-side display
+                        images_base64 = [tensor_to_base64(img) for img in train_images]
+                        image_names = [f"Sample {i}" for i in range(len(images_base64))]
+
+                        # Convert the Plotly figure to JSON and build a small HTML page
+                        fig_json = fig.to_json()
+
+                        html = f"""
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset=\"utf-8\" />
+        <title>Interactive 3D {viz_method} - Epoch {epoch}</title>
+        <script src=\"https://cdn.plot.ly/plotly-latest.min.js\"></script>
+        <style>body {{ margin:0; }}</style>
+    </head>
+    <body>
+        <div id=\"plotly-div\" style=\"width:100%;height:100vh;\"></div>
+        <script>
+            var fig = {fig_json};
+            Plotly.newPlot('plotly-div', fig.data, fig.layout, fig.config || {});
+
+            // Images and names embedded from Python
+            var images = {json.dumps(images_base64)};
+            var names = {json.dumps(image_names)};
+
+            var gd = document.getElementById('plotly-div');
+            gd.on('plotly_click', function(eventData) {{
+                try {{
+                    var pt = eventData.points[0];
+                    var idx = pt.customdata;
+                    // customdata may be an array or a scalar
+                    if (Array.isArray(idx)) idx = idx[0];
+                    if (idx == null) return;
+
+                    var img = images[idx];
+                    var title = names[idx] || 'Image';
+                    if (!img) {{
+                        alert('Image not available for this sample');
+                        return;
+                    }}
+
+                    // Open image in new window/tab
+                    var w = window.open('about:blank', '_blank');
+                    if (w) {{
+                        w.document.write('<title>' + title + '</title>');
+                        w.document.write('<img src="' + img + '" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>');
+                        w.document.close();
+                    }} else {{
+                        // Fallback: show in an overlay
+                        alert('Unable to open new window - popup blocked.');
+                    }}
+                }} catch (e) {{
+                    console.warn('Click handler error', e);
+                }}
+            }});
+        </script>
+    </body>
+</html>
+"""
+
+                        # Write the HTML file
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        output_path.write_text(html, encoding='utf-8')
+                        logging.info(f"[OK] Interactive 3D {viz_method} saved to {output_path} (with click-to-open)")
+                except Exception as e:
+                        # Fallback to the built-in writer if anything goes wrong
+                        logging.warning(f"Custom HTML generation failed: {e} - falling back to fig.write_html()")
+                        fig.write_html(str(output_path))
+
+                return fig
         
     except ImportError:
         logging.warning("Plotly not installed. Install with: pip install plotly")
