@@ -16,7 +16,8 @@ dependencies = [
     "umap-learn",     
     "tensorboard>=2.12.0",
     "torchmetrics",
-    "tqdm"            
+    "tqdm",
+    "plotly>=5.0.0"
 ]
 
 [options]
