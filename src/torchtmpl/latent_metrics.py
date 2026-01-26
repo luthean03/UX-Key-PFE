@@ -245,6 +245,159 @@ def compute_latent_density_metrics(latents, n_neighbors=5):
     return metrics
 
 
+def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype_embedded, archetype_names, 
+                                       archetype_cluster_labels, train_images, colors, k, 
+                                       viz_method, epoch, n_samples, latent_dim, output_path):
+    """Create interactive 3D visualization with Plotly and image thumbnails.
+    
+    Args:
+        z_embedded_3d: (N, 3) array of 3D projections (PCA or t-SNE)
+        cluster_labels: (N,) cluster assignments
+        archetype_embedded: (K, 3) archetype projections
+        archetype_names: List of archetype names
+        archetype_cluster_labels: (K,) archetype cluster assignments
+        train_images: List of torch tensors (images)
+        colors: Matplotlib colormap for clusters
+        k: Number of clusters
+        viz_method: 'PCA' or 't-SNE'
+        epoch: Current epoch
+        n_samples: Number of samples
+        latent_dim: Latent dimension
+        output_path: Path to save HTML file
+    """
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        import base64
+        from io import BytesIO
+        
+        logging.info(f"Creating interactive 3D {viz_method} visualization with Plotly...")
+        
+        # Helper: convert tensor image to base64
+        def tensor_to_base64(img_tensor, max_size=200):
+            """Convert torch tensor (1, H, W) to base64 PNG."""
+            # Convert to numpy and scale to 0-255
+            img_np = (img_tensor.squeeze().numpy() * 255).astype(np.uint8)
+            pil_img = Image.fromarray(img_np, mode='L')
+            
+            # Resize to max_size for thumbnails
+            h, w = pil_img.size
+            if h > max_size or w > max_size:
+                ratio = min(max_size / h, max_size / w)
+                new_size = (int(h * ratio), int(w * ratio))
+                pil_img = pil_img.resize(new_size, Image.LANCZOS)
+            
+            # Convert to base64
+            buffered = BytesIO()
+            pil_img.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode()
+            return f"data:image/png;base64,{img_str}"
+        
+        # Prepare data traces for each cluster
+        fig = go.Figure()
+        
+        # Add training samples (one trace per cluster for legend)
+        for cluster_id in range(k):
+            mask = cluster_labels == cluster_id
+            if np.sum(mask) == 0:
+                continue
+            
+            # Get cluster points
+            cluster_points = z_embedded_3d[mask]
+            cluster_indices = np.where(mask)[0]
+            
+            # Prepare hover text with image thumbnails
+            hover_texts = []
+            for idx in cluster_indices[:min(len(cluster_indices), len(train_images))]:
+                if idx < len(train_images):
+                    img_base64 = tensor_to_base64(train_images[idx])
+                    hover_text = f"<img src='{img_base64}' width='150'><br>Sample {idx}<br>Cluster {cluster_id}"
+                    hover_texts.append(hover_text)
+                else:
+                    hover_texts.append(f"Sample {idx}<br>Cluster {cluster_id}")
+            
+            # Convert matplotlib color to RGB
+            color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
+            
+            fig.add_trace(go.Scatter3d(
+                x=cluster_points[:, 0],
+                y=cluster_points[:, 1],
+                z=cluster_points[:, 2],
+                mode='markers',
+                name=f'Cluster {cluster_id}',
+                marker=dict(
+                    size=4,
+                    color=f'rgb{color_rgb}',
+                    opacity=0.6,
+                    line=dict(width=0)
+                ),
+                text=hover_texts,
+                hovertemplate='%{text}<extra></extra>',
+                customdata=cluster_indices
+            ))
+        
+        # Add archetypes as stars
+        if archetype_embedded is not None and len(archetype_embedded) > 0:
+            for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_labels)):
+                color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
+                
+                fig.add_trace(go.Scatter3d(
+                    x=[archetype_embedded[i, 0]],
+                    y=[archetype_embedded[i, 1]],
+                    z=[archetype_embedded[i, 2]],
+                    mode='markers+text',
+                    name=f'★ {name}',
+                    marker=dict(
+                        size=15,
+                        color=f'rgb{color_rgb}',
+                        symbol='diamond',
+                        line=dict(color='white', width=2)
+                    ),
+                    text=[name],
+                    textposition='top center',
+                    textfont=dict(size=10, color='black'),
+                    hovertemplate=f'<b>{name}</b><br>Cluster {cluster_id}<extra></extra>'
+                ))
+        
+        # Update layout
+        fig.update_layout(
+            title=f"Interactive 3D {viz_method} - K-means on {latent_dim}D Latent Space<br>Epoch {epoch}, n={n_samples}, k={k}",
+            scene=dict(
+                xaxis_title=f'{viz_method} Component 1',
+                yaxis_title=f'{viz_method} Component 2',
+                zaxis_title=f'{viz_method} Component 3',
+                camera=dict(
+                    eye=dict(x=1.5, y=1.5, z=1.5)
+                )
+            ),
+            width=1200,
+            height=800,
+            hovermode='closest',
+            showlegend=True,
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01
+            )
+        )
+        
+        # Save as HTML
+        fig.write_html(str(output_path))
+        logging.info(f"[OK] Interactive 3D {viz_method} saved to {output_path}")
+        
+        return fig
+        
+    except ImportError:
+        logging.warning("Plotly not installed. Install with: pip install plotly")
+        return None
+    except Exception as e:
+        logging.warning(f"Failed to create interactive 3D visualization: {e}")
+        import traceback
+        logging.debug(traceback.format_exc())
+        return None
+
+
 def log_latent_space_visualization(model, train_loader, archetypes_dir, device, writer, epoch, max_height=2048, max_samples=1000):
     """Generate and log comprehensive latent space visualizations to TensorBoard.
     
@@ -260,12 +413,15 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
     """
     import matplotlib.pyplot as plt
     from sklearn.cluster import KMeans
+    import base64
+    from io import BytesIO
     
     # 1. Encoder le dataset d'entraînement complet
     logging.info(f"Encoding training dataset (max {max_samples} samples)...")
     model.eval()
     train_latents = []
     train_indices = []
+    train_images = []  # Store images for interactive visualization
     
     with torch.inference_mode():
         for i, (inputs, targets, masks) in enumerate(train_loader):
@@ -278,6 +434,9 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             _, mu, _ = model(targets, mask=masks)
             train_latents.append(mu.cpu().numpy())
             train_indices.append(i)
+            # Store first image of batch for visualization (resize for efficiency)
+            img_tensor = targets[0].cpu()  # (1, H, W)
+            train_images.append(img_tensor)
     
     if len(train_latents) == 0:
         logging.warning("No training samples encoded, skipping visualization")
@@ -351,46 +510,90 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         n_samples = len(train_latents)
         perplexity = min(30.0, max(5.0, n_samples / 3))  # Adaptive perplexity based on sample size
         
-        # Generate PCA projection (2 principal components)
-        logging.info(f"Generating PCA projection (2 components)...")
-        pca = PCA(n_components=2, random_state=42)
-        z_pca = pca.fit_transform(train_latents)
-        logging.info(f"PCA explained variance: {pca.explained_variance_ratio_[0]:.3f}, {pca.explained_variance_ratio_[1]:.3f}")
+        # Determine output directory for interactive HTML files
+        if writer is not None:
+            log_dir = pathlib.Path(writer.log_dir)
+            interactive_dir = log_dir / "interactive_viz"
+            interactive_dir.mkdir(exist_ok=True)
+        else:
+            interactive_dir = pathlib.Path("./interactive_viz")
+            interactive_dir.mkdir(exist_ok=True)
+        
+        # Generate PCA projection (3 components for 3D viz)
+        logging.info(f"Generating PCA projection (3 components for 3D)...")
+        pca_3d = PCA(n_components=3, random_state=42)
+        z_pca_3d = pca_3d.fit_transform(train_latents)
+        logging.info(f"PCA explained variance: {pca_3d.explained_variance_ratio_[0]:.3f}, "
+                    f"{pca_3d.explained_variance_ratio_[1]:.3f}, {pca_3d.explained_variance_ratio_[2]:.3f}")
+        
+        # Also keep 2D for matplotlib
+        z_pca_2d = z_pca_3d[:, :2]
         
         # Calculer t-SNE seulement si assez de samples
         if n_samples >= 50:
-            logging.info(f"Generating t-SNE projection with perplexity={perplexity:.1f} (n_samples={n_samples})")
-            tsne = TSNE(n_components=2, random_state=42, perplexity=perplexity, 
-                       init="pca", learning_rate="auto")
-            z_tsne = tsne.fit_transform(train_latents)
-            visualizations = [("PCA", z_pca, pca), ("t-SNE", z_tsne, None)]
+            # t-SNE 3D
+            logging.info(f"Generating t-SNE 3D projection with perplexity={perplexity:.1f} (n_samples={n_samples})")
+            tsne_3d = TSNE(n_components=3, random_state=42, perplexity=perplexity, 
+                          init="pca", learning_rate="auto")
+            z_tsne_3d = tsne_3d.fit_transform(train_latents)
+            z_tsne_2d = z_tsne_3d[:, :2]
+            
+            visualizations_2d = [("PCA", z_pca_2d, pca_3d), ("t-SNE", z_tsne_2d, None)]
+            visualizations_3d = [("PCA", z_pca_3d, pca_3d), ("t-SNE", z_tsne_3d, None)]
         else:
             logging.info(f"Skipping t-SNE (n_samples={n_samples} < 50)")
-            visualizations = [("PCA", z_pca, None)]
+            visualizations_2d = [("PCA", z_pca_2d, pca_3d)]
+            visualizations_3d = [("PCA", z_pca_3d, pca_3d)]
         
         # Générer une figure pour chaque visualisation
         colors = cm.tab20(np.linspace(0, 1, k))
         
-        for viz_method, z_embedded, projection_model in visualizations:
-            # Use cluster labels from FULL latent space k-means (not 2D)
+        # Process both 2D and 3D visualizations
+        for idx, ((viz_method_2d, z_embedded_2d, projection_model_2d), 
+                  (viz_method_3d, z_embedded_3d, projection_model_3d)) in enumerate(zip(visualizations_2d, visualizations_3d)):
+            
+            viz_method = viz_method_2d  # Same for both
+            
+            # Use cluster labels from FULL latent space k-means (not 2D/3D)
             logging.info(f"Visualizing {viz_method} projection with clusters from full {latent_dim}D k-means...")
             
-            # Project archetypes to 2D space for visualization
-            arch_embedded = None
+            # Project archetypes to 2D and 3D space for visualization
+            arch_embedded_2d = None
+            arch_embedded_3d = None
             
             if archetype_latents is not None:
                 logging.info(f"Projecting archetypes to {viz_method} space...")
                 
-                # Projeter les archetypes sur le même plan 2D
-                if projection_model is not None:  # PCA
-                    arch_embedded = projection_model.transform(archetype_latents)
+                # Projeter les archetypes sur le plan 2D et 3D
+                if projection_model_2d is not None:  # PCA
+                    arch_embedded_2d = projection_model_2d.transform(archetype_latents)[:, :2]
+                    arch_embedded_3d = projection_model_3d.transform(archetype_latents)
                 else:  # t-SNE - utiliser KNN pour approximation
                     from sklearn.neighbors import NearestNeighbors
                     nbrs = NearestNeighbors(n_neighbors=1).fit(train_latents)
                     _, indices = nbrs.kneighbors(archetype_latents)
-                    arch_embedded = z_embedded[indices.flatten()]
+                    arch_embedded_2d = z_embedded_2d[indices.flatten()]
+                    arch_embedded_3d = z_embedded_3d[indices.flatten()]
             
-            # Visualisation
+            # ===== 1. Create Interactive 3D Plotly Visualization =====
+            output_path_3d = interactive_dir / f"epoch_{epoch:04d}_{viz_method.lower()}_3d.html"
+            create_interactive_3d_visualization(
+                z_embedded_3d, 
+                train_cluster_labels_full,
+                arch_embedded_3d, 
+                archetype_names, 
+                archetype_cluster_assignments_full,
+                train_images,
+                colors, 
+                k, 
+                viz_method, 
+                epoch, 
+                n_samples, 
+                latent_dim,
+                output_path_3d
+            )
+            
+            # ===== 2. Create Static 2D Matplotlib Visualization for TensorBoard =====
             fig, ax = plt.subplots(figsize=(14, 10))
             
             # Colorier par cluster k-means (calculé sur l'espace latent complet)
@@ -404,19 +607,19 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
                     else:
                         label = f"Cluster {cluster_id}"
                     
-                    ax.scatter(z_embedded[mask, 0], z_embedded[mask, 1], 
+                    ax.scatter(z_embedded_2d[mask, 0], z_embedded_2d[mask, 1], 
                               c=[colors[cluster_id]], label=label, s=30, alpha=0.6, edgecolors='none')
             
             # Superposer les archetypes (étoiles colorées par cluster)
-            if archetype_latents is not None and arch_embedded is not None:
+            if archetype_latents is not None and arch_embedded_2d is not None:
                 # Colorier chaque archetype selon son cluster k-means (sur l'espace latent complet)
                 for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_assignments_full)):
-                    ax.scatter(arch_embedded[i, 0], arch_embedded[i, 1], 
+                    ax.scatter(arch_embedded_2d[i, 0], arch_embedded_2d[i, 1], 
                               c=[colors[cluster_id]], marker='*', s=500, 
                               edgecolors='white', linewidths=2, zorder=10)
                     
                     # Annoter l'archetype
-                    ax.annotate(name, (arch_embedded[i, 0], arch_embedded[i, 1]),
+                    ax.annotate(name, (arch_embedded_2d[i, 0], arch_embedded_2d[i, 1]),
                                fontsize=8, ha='center', va='bottom', 
                                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
             
