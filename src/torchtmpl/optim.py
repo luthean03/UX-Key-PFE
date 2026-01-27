@@ -53,6 +53,10 @@ def get_scheduler(optimizer, cfg: dict):
             except ValueError:
                 pass
     
+    # Remove 'verbose' parameter for schedulers that don't support it
+    if name == "CosineAnnealingWarmRestarts" and "verbose" in params:
+        params.pop("verbose")
+    
     logging.info(f"Using Scheduler: {name} with params {params}")
 
     available_schedulers = {

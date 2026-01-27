@@ -113,12 +113,6 @@ echo "Setting up the virtual environment"
 python3 -m venv venv
 source venv/bin/activate
 
-# Installation compatible vieux GPU + dépendances
-python -m pip install -U pip
-python -m pip install 'numpy<2'
-python -m pip install --index-url https://download.pytorch.org/whl/cu118 --extra-index-url https://pypi.org/simple \
-    torch==2.1.2+cu118 torchvision==0.16.2+cu118
-
 # Install project and dependencies via pyproject.toml
 python -m pip install .
 

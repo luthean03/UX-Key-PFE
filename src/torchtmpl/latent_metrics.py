@@ -274,12 +274,20 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
 
         fig = go.Figure()
 
+        logging.info(f"Creating traces for {k} clusters from {len(z_embedded_3d)} points")
+        logging.info(f"cluster_labels shape: {cluster_labels.shape}, unique values: {np.unique(cluster_labels)}")
+        
         for cluster_id in range(k):
             mask = cluster_labels == cluster_id
-            if np.sum(mask) == 0:
+            n_points = np.sum(mask)
+            if n_points == 0:
+                logging.warning(f"Cluster {cluster_id}: 0 points (skipping)")
                 continue
+            
             cluster_points = z_embedded_3d[mask]
             cluster_indices = np.where(mask)[0]
+            
+            logging.info(f"Cluster {cluster_id}: {n_points} points, cluster_points.shape={cluster_points.shape}")
 
             hover_texts = []
             for idx in cluster_indices:
@@ -291,16 +299,18 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
 
             color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
             fig.add_trace(go.Scatter3d(
-                x=cluster_points[:, 0],
-                y=cluster_points[:, 1],
-                z=cluster_points[:, 2],
+                x=cluster_points[:, 0].tolist(),
+                y=cluster_points[:, 1].tolist(),
+                z=cluster_points[:, 2].tolist(),
                 mode='markers',
                 name=f'Cluster {cluster_id}',
-                marker=dict(size=4, color=f'rgb{color_rgb}', opacity=0.6, line=dict(width=0)),
+                marker=dict(size=6, color=f'rgb{color_rgb}', opacity=0.8, line=dict(width=0.5, color='white')),
                 text=hover_texts,
                 hovertemplate='%{text}<extra></extra>',
-                customdata=cluster_indices
+                customdata=cluster_indices.tolist()
             ))
+            
+            logging.info(f"Added trace for Cluster {cluster_id} with {len(cluster_points)} points")
 
         if archetype_embedded is not None and len(archetype_embedded) > 0:
             for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_labels)):
@@ -332,32 +342,32 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
 <!DOCTYPE html>
 <html>
   <head>
-    <meta charset=\"utf-8\" />
+    <meta charset="utf-8" />
     <title>Interactive 3D {viz_method} - Epoch {epoch}</title>
-    <script src=\"https://cdn.plot.ly/plotly-latest.min.js\"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
     <style>body {{ margin:0; }}</style>
   </head>
   <body>
-    <div id=\"plotly-div\" style=\"width:100%;height:100vh;\"></div>
+    <div id="plotly-div" style="width:100%;height:100vh;"></div>
     <script>
       var fig = {fig_json};
-      Plotly.newPlot('plotly-div', fig.data, fig.layout, fig.config || {});
+      Plotly.newPlot('plotly-div', fig.data, fig.layout, fig.config || {{}});
       var images = {json.dumps(images_base64)};
       var names = {json.dumps(image_names)};
       var gd = document.getElementById('plotly-div');
-      gd.on('plotly_click', function(eventData) {{
-        try {{
+      gd.on('plotly_click', function(eventData) {{{{
+        try {{{{
           var pt = eventData.points[0];
           var idx = pt.customdata;
           if (Array.isArray(idx)) idx = idx[0];
           if (idx == null) return;
           var img = images[idx];
           var title = names[idx] || 'Image';
-          if (!img) {{ alert('Image not available'); return; }}
+          if (!img) {{{{ alert('Image not available'); return; }}}}
           var w = window.open('about:blank', '_blank');
-          if (w) {{ w.document.write('<title>' + title + '</title>'); w.document.write('<img src="' + img + '" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>'); w.document.close(); }} else {{ alert('Unable to open new window - popup blocked.'); }}
-        }} catch (e) {{ console.warn('Click handler error', e); }}
-      }});
+          if (w) {{{{ w.document.write('<title>' + title + '</title>'); w.document.write('<img src="' + img + '" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>'); w.document.close(); }}}} else {{{{ alert('Unable to open new window - popup blocked.'); }}}}
+        }}}} catch (e) {{{{ console.warn('Click handler error', e); }}}}
+      }}}});
     </script>
   </body>
 </html>
@@ -413,9 +423,10 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             _, mu, _ = model(targets, mask=masks)
             train_latents.append(mu.cpu().numpy())
             train_indices.append(i)
-            # Store first image of batch for visualization (resize for efficiency)
-            img_tensor = targets[0].cpu()  # (1, H, W)
-            train_images.append(img_tensor)
+            # Store ALL images from batch for visualization
+            for j in range(targets.size(0)):
+                img_tensor = targets[j].cpu()  # (1, H, W)
+                train_images.append(img_tensor)
     
     if len(train_latents) == 0:
         logging.warning("No training samples encoded, skipping visualization")
@@ -423,7 +434,18 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
     
     train_latents = np.concatenate(train_latents, axis=0)  # (N, latent_dim)
     latent_dim = train_latents.shape[1]  # Get actual latent dimension from data
-    logging.info(f"Encoded {len(train_latents)} training samples (latent_dim={latent_dim})")
+    n_samples = len(train_latents)  # Total number of samples (not batches!)
+    
+    logging.info(f"Encoded {n_samples} training samples (latent_dim={latent_dim})")
+    logging.info(f"Collected {len(train_images)} images for visualization")
+    
+    # Verify that we have the same number of latents and images
+    if len(train_images) != n_samples:
+        logging.warning(f"Mismatch: {n_samples} latents but {len(train_images)} images. Truncating to minimum.")
+        min_len = min(n_samples, len(train_images))
+        train_latents = train_latents[:min_len]
+        train_images = train_images[:min_len]
+        n_samples = min_len
     
     # 2. Charger archetypes pour déterminer k
     archetype_latents, archetype_labels, archetype_names, archetype_images = load_archetypes(archetypes_dir, model, device, max_height)
@@ -486,7 +508,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         from sklearn.decomposition import PCA
         import matplotlib.cm as cm
         
-        n_samples = len(train_latents)
+        # n_samples already calculated after concatenation
         perplexity = min(30.0, max(5.0, n_samples / 3))  # Adaptive perplexity based on sample size
         
         # Determine output directory for interactive HTML files

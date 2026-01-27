@@ -356,8 +356,8 @@ def train(config):
         # Setup mixed precision training if enabled
         use_amp = bool(optim_conf.get("mixed_precision", False)) and use_cuda
         if use_amp:
-            from torch.cuda.amp import autocast, GradScaler
-            scaler = GradScaler()
+            from torch.amp import autocast, GradScaler
+            scaler = GradScaler('cuda')
             logging.info("Mixed Precision Training (AMP) enabled")
         else:
             scaler = None
@@ -418,7 +418,7 @@ def train(config):
                 
                 # Forward pass with automatic mixed precision if enabled
                 if use_amp:
-                    with autocast():
+                    with autocast('cuda'):
                         recon, mu, logvar = model(inputs, mask=masks)
                         loss_result = criterion(recon, targets, mu, logvar, mask=masks)
                 else:
