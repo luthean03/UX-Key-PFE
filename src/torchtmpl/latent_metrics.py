@@ -245,219 +245,128 @@ def compute_latent_density_metrics(latents, n_neighbors=5):
     return metrics
 
 
-def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype_embedded, archetype_names, 
-                                       archetype_cluster_labels, train_images, colors, k, 
-                                       viz_method, epoch, n_samples, latent_dim, output_path):
+def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype_embedded, archetype_names,
+    archetype_cluster_labels, train_images, colors, k,
+    viz_method, epoch, n_samples, latent_dim, output_path):
     """Create interactive 3D visualization with Plotly and image thumbnails.
-    
-    Args:
-        z_embedded_3d: (N, 3) array of 3D projections (PCA or t-SNE)
-        cluster_labels: (N,) cluster assignments
-        archetype_embedded: (K, 3) archetype projections
-        archetype_names: List of archetype names
-        archetype_cluster_labels: (K,) archetype cluster assignments
-        train_images: List of torch tensors (images)
-        colors: Matplotlib colormap for clusters
-        k: Number of clusters
-        viz_method: 'PCA' or 't-SNE'
-        epoch: Current epoch
-        n_samples: Number of samples
-        latent_dim: Latent dimension
-        output_path: Path to save HTML file
+
+    The visualization embeds thumbnail images as base64 data URIs for hover
+    and opens the full thumbnail in a new window when a point is clicked.
     """
     try:
         import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
         import base64
         from io import BytesIO
-        
+        import json
+
         logging.info(f"Creating interactive 3D {viz_method} visualization with Plotly...")
-        
-        # Helper: convert tensor image to base64
+
         def tensor_to_base64(img_tensor, max_size=200):
-            """Convert torch tensor (1, H, W) to base64 PNG."""
-            # Convert to numpy and scale to 0-255
             img_np = (img_tensor.squeeze().numpy() * 255).astype(np.uint8)
             pil_img = Image.fromarray(img_np, mode='L')
-            
-            # Resize to max_size for thumbnails
-            h, w = pil_img.size
-            if h > max_size or w > max_size:
-                ratio = min(max_size / h, max_size / w)
-                new_size = (int(h * ratio), int(w * ratio))
-                pil_img = pil_img.resize(new_size, Image.LANCZOS)
-            
-            # Convert to base64
-            buffered = BytesIO()
-            pil_img.save(buffered, format="PNG")
-            img_str = base64.b64encode(buffered.getvalue()).decode()
-            return f"data:image/png;base64,{img_str}"
-        
-        # Prepare data traces for each cluster
+            w, h = pil_img.size
+            if w > max_size or h > max_size:
+                ratio = min(max_size / w, max_size / h)
+                pil_img = pil_img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+            buf = BytesIO()
+            pil_img.save(buf, format='PNG')
+            return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
+
         fig = go.Figure()
-        
-        # Add training samples (one trace per cluster for legend)
+
         for cluster_id in range(k):
             mask = cluster_labels == cluster_id
             if np.sum(mask) == 0:
                 continue
-            
-            # Get cluster points
             cluster_points = z_embedded_3d[mask]
             cluster_indices = np.where(mask)[0]
-            
-            # Prepare hover text with image thumbnails
+
             hover_texts = []
-            for idx in cluster_indices[:min(len(cluster_indices), len(train_images))]:
+            for idx in cluster_indices:
                 if idx < len(train_images):
-                    img_base64 = tensor_to_base64(train_images[idx])
-                    hover_text = f"<img src='{img_base64}' width='150'><br>Sample {idx}<br>Cluster {cluster_id}"
-                    hover_texts.append(hover_text)
+                    img_b64 = tensor_to_base64(train_images[idx])
+                    hover_texts.append(f"<img src='{img_b64}' width='150'><br>Sample {idx}<br>Cluster {cluster_id}")
                 else:
                     hover_texts.append(f"Sample {idx}<br>Cluster {cluster_id}")
-            
-            # Convert matplotlib color to RGB
+
             color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
-            
             fig.add_trace(go.Scatter3d(
                 x=cluster_points[:, 0],
                 y=cluster_points[:, 1],
                 z=cluster_points[:, 2],
                 mode='markers',
                 name=f'Cluster {cluster_id}',
-                marker=dict(
-                    size=4,
-                    color=f'rgb{color_rgb}',
-                    opacity=0.6,
-                    line=dict(width=0)
-                ),
+                marker=dict(size=4, color=f'rgb{color_rgb}', opacity=0.6, line=dict(width=0)),
                 text=hover_texts,
                 hovertemplate='%{text}<extra></extra>',
                 customdata=cluster_indices
             ))
-        
-        # Add archetypes as stars
+
         if archetype_embedded is not None and len(archetype_embedded) > 0:
             for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_labels)):
                 color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
-                
                 fig.add_trace(go.Scatter3d(
                     x=[archetype_embedded[i, 0]],
                     y=[archetype_embedded[i, 1]],
                     z=[archetype_embedded[i, 2]],
                     mode='markers+text',
                     name=f'★ {name}',
-                    marker=dict(
-                        size=15,
-                        color=f'rgb{color_rgb}',
-                        symbol='diamond',
-                        line=dict(color='white', width=2)
-                    ),
+                    marker=dict(size=15, color=f'rgb{color_rgb}', symbol='diamond', line=dict(color='white', width=2)),
                     text=[name],
                     textposition='top center',
                     textfont=dict(size=10, color='black'),
                     hovertemplate=f'<b>{name}</b><br>Cluster {cluster_id}<extra></extra>'
                 ))
-        
-        # Update layout
+
         fig.update_layout(
             title=f"Interactive 3D {viz_method} - K-means on {latent_dim}D Latent Space<br>Epoch {epoch}, n={n_samples}, k={k}",
-            scene=dict(
-                xaxis_title=f'{viz_method} Component 1',
-                yaxis_title=f'{viz_method} Component 2',
-                zaxis_title=f'{viz_method} Component 3',
-                camera=dict(
-                    eye=dict(x=1.5, y=1.5, z=1.5)
-                )
-            ),
-            width=1200,
-            height=800,
-            hovermode='closest',
-            showlegend=True,
-            legend=dict(
-                yanchor="top",
-                y=0.99,
-                xanchor="left",
-                x=0.01
-            )
+            scene=dict(xaxis_title=f'{viz_method} Component 1', yaxis_title=f'{viz_method} Component 2', zaxis_title=f'{viz_method} Component 3'),
+            width=1200, height=800, hovermode='closest', showlegend=True
         )
-        
-                # Save as HTML with click-to-open-image support
-                try:
-                        import json
 
-                        # Prepare base64 thumbnails for client-side display
-                        images_base64 = [tensor_to_base64(img) for img in train_images]
-                        image_names = [f"Sample {i}" for i in range(len(images_base64))]
+        images_base64 = [tensor_to_base64(img) for img in train_images]
+        image_names = [f"Sample {i}" for i in range(len(images_base64))]
 
-                        # Convert the Plotly figure to JSON and build a small HTML page
-                        fig_json = fig.to_json()
-
-                        html = f"""
+        fig_json = fig.to_json()
+        html = f"""
 <!DOCTYPE html>
 <html>
-    <head>
-        <meta charset=\"utf-8\" />
-        <title>Interactive 3D {viz_method} - Epoch {epoch}</title>
-        <script src=\"https://cdn.plot.ly/plotly-latest.min.js\"></script>
-        <style>body {{ margin:0; }}</style>
-    </head>
-    <body>
-        <div id=\"plotly-div\" style=\"width:100%;height:100vh;\"></div>
-        <script>
-            var fig = {fig_json};
-            Plotly.newPlot('plotly-div', fig.data, fig.layout, fig.config || {});
-
-            // Images and names embedded from Python
-            var images = {json.dumps(images_base64)};
-            var names = {json.dumps(image_names)};
-
-            var gd = document.getElementById('plotly-div');
-            gd.on('plotly_click', function(eventData) {{
-                try {{
-                    var pt = eventData.points[0];
-                    var idx = pt.customdata;
-                    // customdata may be an array or a scalar
-                    if (Array.isArray(idx)) idx = idx[0];
-                    if (idx == null) return;
-
-                    var img = images[idx];
-                    var title = names[idx] || 'Image';
-                    if (!img) {{
-                        alert('Image not available for this sample');
-                        return;
-                    }}
-
-                    // Open image in new window/tab
-                    var w = window.open('about:blank', '_blank');
-                    if (w) {{
-                        w.document.write('<title>' + title + '</title>');
-                        w.document.write('<img src="' + img + '" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>');
-                        w.document.close();
-                    }} else {{
-                        // Fallback: show in an overlay
-                        alert('Unable to open new window - popup blocked.');
-                    }}
-                }} catch (e) {{
-                    console.warn('Click handler error', e);
-                }}
-            }});
-        </script>
-    </body>
+  <head>
+    <meta charset=\"utf-8\" />
+    <title>Interactive 3D {viz_method} - Epoch {epoch}</title>
+    <script src=\"https://cdn.plot.ly/plotly-latest.min.js\"></script>
+    <style>body {{ margin:0; }}</style>
+  </head>
+  <body>
+    <div id=\"plotly-div\" style=\"width:100%;height:100vh;\"></div>
+    <script>
+      var fig = {fig_json};
+      Plotly.newPlot('plotly-div', fig.data, fig.layout, fig.config || {});
+      var images = {json.dumps(images_base64)};
+      var names = {json.dumps(image_names)};
+      var gd = document.getElementById('plotly-div');
+      gd.on('plotly_click', function(eventData) {{
+        try {{
+          var pt = eventData.points[0];
+          var idx = pt.customdata;
+          if (Array.isArray(idx)) idx = idx[0];
+          if (idx == null) return;
+          var img = images[idx];
+          var title = names[idx] || 'Image';
+          if (!img) {{ alert('Image not available'); return; }}
+          var w = window.open('about:blank', '_blank');
+          if (w) {{ w.document.write('<title>' + title + '</title>'); w.document.write('<img src="' + img + '" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>'); w.document.close(); }} else {{ alert('Unable to open new window - popup blocked.'); }}
+        }} catch (e) {{ console.warn('Click handler error', e); }}
+      }});
+    </script>
+  </body>
 </html>
 """
 
-                        # Write the HTML file
-                        output_path.parent.mkdir(parents=True, exist_ok=True)
-                        output_path.write_text(html, encoding='utf-8')
-                        logging.info(f"[OK] Interactive 3D {viz_method} saved to {output_path} (with click-to-open)")
-                except Exception as e:
-                        # Fallback to the built-in writer if anything goes wrong
-                        logging.warning(f"Custom HTML generation failed: {e} - falling back to fig.write_html()")
-                        fig.write_html(str(output_path))
-
-                return fig
-        
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(html, encoding='utf-8')
+        logging.info(f"[OK] Interactive 3D {viz_method} saved to {output_path} (with click-to-open)")
+        return fig
     except ImportError:
         logging.warning("Plotly not installed. Install with: pip install plotly")
         return None
