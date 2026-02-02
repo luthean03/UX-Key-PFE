@@ -318,6 +318,41 @@ print(interp_output)
     fi
 fi
 
+if [[ "{command}" == "clustering" ]]; then
+    echo "Clustering"
+    python3 -m torchtmpl.main "$job_config" clustering {extra_args}
+
+    if [[ $? != 0 ]]; then
+        exit -1
+    fi
+    
+    # Copy clustering results back to shared filesystem
+    # Extract clustering output directory from config
+    CLUSTER_OUTPUT_DIR=$(python3 -c "
+import yaml
+import pathlib
+cfg = yaml.safe_load(open('$job_config'))
+model_path = cfg.get('clustering', {{}}).get('model_path', '')
+output_dir = cfg.get('clustering', {{}}).get('output_dir')
+if output_dir is None and model_path:
+    # Default: save in model directory
+    model_dir = pathlib.Path(model_path).parent
+    output_dir = str(model_dir / 'clustering_viz')
+print(output_dir or './clustering_viz')
+")
+    
+    # Copy results from compute node to shared directory
+    if [[ -d "$CLUSTER_OUTPUT_DIR" ]]; then
+        echo "[OK] Copying clustering results back to shared filesystem..."
+        # Create destination folder if not exists
+        mkdir -p "$current_dir/$CLUSTER_OUTPUT_DIR"
+        # Copy HTML files
+        rsync -r "$CLUSTER_OUTPUT_DIR/" "$current_dir/$CLUSTER_OUTPUT_DIR/" 2>/dev/null || true
+        echo "[OK] Clustering results copied to: $current_dir/$CLUSTER_OUTPUT_DIR"
+        echo "   Found $(ls $current_dir/$CLUSTER_OUTPUT_DIR/*.html 2>/dev/null | wc -l) HTML visualizations"
+    fi
+fi
+
 echo "Done. Artifacts are written to the paths specified in the YAML (under $current_dir)."
 """
 
@@ -338,7 +373,7 @@ def _pop_flag(argv, flag: str) -> bool:
 
 def _print_usage_and_exit(prog: str) -> None:
     print(
-        "Usage : {} config.yaml [nruns|1] [train|test|train_test|interpolate] [extra args...]\n"
+        "Usage : {} config.yaml [nruns|1] [train|test|train_test|interpolate|clustering] [extra args...]\n"
         "Optional flags:\n"
         "  --dry-run       Print the generated sbatch script and exit\n"
         "  --allow-dirty   Allow uncommitted changes".format(
@@ -364,15 +399,15 @@ command = "train"
 if remaining:
     if remaining[0].isdigit():
         nruns = int(remaining.pop(0))
-        if remaining and remaining[0] in {"train", "test", "train_test", "interpolate"}:
+        if remaining and remaining[0] in {"train", "test", "train_test", "interpolate", "clustering"}:
             command = remaining.pop(0)
-    elif remaining[0] in {"train", "test", "train_test", "interpolate"}:
+    elif remaining[0] in {"train", "test", "train_test", "interpolate", "clustering"}:
         command = remaining.pop(0)
         if remaining and remaining[0].isdigit():
             nruns = int(remaining.pop(0))
 
-if command not in {"train", "test", "train_test", "interpolate"}:
-    raise ValueError("command must be one of: train, test, train_test, interpolate")
+if command not in {"train", "test", "train_test", "interpolate", "clustering"}:
+    raise ValueError("command must be one of: train, test, train_test, interpolate, clustering")
 
 if remaining and remaining[0] == "--":
     remaining.pop(0)

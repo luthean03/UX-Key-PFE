@@ -1071,11 +1071,239 @@ def interpolate(config):
     logging.info(f"Grid size: {grid_img.size[0]} x {grid_img.size[1]} pixels")
 
 
+def clustering(config):
+    """Generate interactive latent space clustering visualizations.
+    
+    Creates interactive HTML files with PCA and/or t-SNE projections,
+    k-means clustering, and archetype markers.
+    
+    Expected config structure:
+    {
+        'clustering': {
+            'model_path': '/path/to/checkpoint.pt',
+            'data_dir': '/path/to/images',
+            'output_dir': '/path/to/output',  # or null to save in model directory
+            'max_samples': 1000,
+            'n_clusters': 15,
+            'viz_method': 'both',  # 'pca', 'tsne', or 'both'
+            'archetypes_dir': '/path/to/archetypes'
+        },
+        'model': {...},
+        'data': {...}
+    }
+    """
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda") if use_cuda else torch.device("cpu")
+    logging.info(f"Using device: {device}")
+    
+    # Get clustering config
+    cluster_config = config.get("clustering", {})
+    model_path = cluster_config.get("model_path")
+    data_dir = cluster_config.get("data_dir")
+    output_dir = cluster_config.get("output_dir")
+    max_samples = int(cluster_config.get("max_samples", 1000))
+    n_clusters = int(cluster_config.get("n_clusters", 15))
+    viz_method = cluster_config.get("viz_method", "both").lower()
+    archetypes_dir = cluster_config.get("archetypes_dir")
+    
+    if not model_path:
+        raise ValueError("clustering.model_path must be specified in config")
+    
+    if not data_dir:
+        raise ValueError("clustering.data_dir must be specified in config")
+    
+    # If output_dir is null, save in model directory
+    if output_dir is None:
+        model_dir = pathlib.Path(model_path).parent
+        output_dir = str(model_dir / "clustering_viz")
+        logging.info(f"Output directory not specified, using model directory: {output_dir}")
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    logging.info(f"Output directory: {output_dir}")
+    
+    # Validate viz_method
+    if viz_method not in ["pca", "tsne", "both"]:
+        raise ValueError(f"viz_method must be 'pca', 'tsne', or 'both', got: {viz_method}")
+    
+    # Load model
+    logging.info("= Loading Model")
+    model_config = config["model"]
+    input_size = (1, 128, 1024)
+    num_classes = 0
+    model = models.build_model(model_config, input_size, num_classes)
+    model.to(device)
+    
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+    
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint, strict=False)
+    logging.info(f"Loaded model from: {model_path}")
+    model.eval()
+    
+    # Load and encode images from data_dir
+    logging.info(f"Loading images from: {data_dir}")
+    data_path = pathlib.Path(data_dir)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Data directory not found: {data_dir}")
+    
+    image_files = sorted(list(data_path.glob("*.png")) + list(data_path.glob("*.jpg")))
+    if len(image_files) == 0:
+        raise ValueError(f"No images found in {data_dir}")
+    
+    # Limit number of samples
+    if len(image_files) > max_samples:
+        logging.info(f"Limiting to {max_samples} samples (out of {len(image_files)})")
+        image_files = image_files[:max_samples]
+    
+    logging.info(f"Encoding {len(image_files)} images...")
+    
+    # Encode images
+    latents = []
+    images = []
+    
+    model.eval()
+    with torch.no_grad():
+        for img_path in tqdm(image_files, desc="Encoding images"):
+            try:
+                # Load image
+                img = Image.open(img_path).convert('L')
+                
+                # Convert to tensor and normalize
+                img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
+                img_tensor = img_tensor.unsqueeze(0).unsqueeze(0).to(device)  # (1, 1, H, W)
+                
+                # Encode
+                mu, logvar = model.encode(img_tensor)
+                z = model.reparameterize(mu, logvar)
+                
+                latents.append(z.cpu().numpy())
+                images.append(img_tensor.cpu())
+                
+            except Exception as e:
+                logging.warning(f"Failed to encode {img_path}: {e}")
+                continue
+    
+    if len(latents) == 0:
+        raise ValueError("No images were successfully encoded")
+    
+    latents = np.concatenate(latents, axis=0)  # (N, latent_dim)
+    n_samples = len(latents)
+    latent_dim = latents.shape[1]
+    
+    logging.info(f"Encoded {n_samples} images (latent_dim={latent_dim})")
+    
+    # Load archetypes if specified
+    archetype_latents = None
+    archetype_names = None
+    archetype_images = None
+    archetype_cluster_labels = None
+    
+    if archetypes_dir:
+        logging.info(f"Loading archetypes from: {archetypes_dir}")
+        archetype_latents, _, archetype_names, archetype_images = latent_metrics.load_archetypes(
+            archetypes_dir, model, device, max_height=2048
+        )
+        if archetype_latents is not None:
+            logging.info(f"Loaded {len(archetype_latents)} archetypes")
+    
+    # Perform k-means clustering on full latent space
+    from sklearn.cluster import KMeans
+    logging.info(f"Performing k-means clustering (k={n_clusters})...")
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    cluster_labels = kmeans.fit_predict(latents)
+    
+    # Assign archetypes to clusters if available
+    if archetype_latents is not None:
+        archetype_cluster_labels = kmeans.predict(archetype_latents)
+    
+    # Compute cluster metrics
+    cluster_metrics = latent_metrics.compute_cluster_metrics(latents, cluster_labels)
+    logging.info(f"Cluster metrics: {cluster_metrics}")
+    
+    # Generate visualizations
+    from sklearn.decomposition import PCA
+    import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
+    
+    colors = cm.tab20(np.linspace(0, 1, n_clusters))
+    
+    # Determine which visualizations to generate
+    viz_methods = []
+    if viz_method in ["pca", "both"]:
+        viz_methods.append("pca")
+    if viz_method in ["tsne", "both"]:
+        viz_methods.append("tsne")
+    
+    for method in viz_methods:
+        logging.info(f"Generating {method.upper()} visualization...")
+        
+        if method == "pca":
+            # PCA projection
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=3, random_state=42)
+            z_embedded = pca.fit_transform(latents)
+            logging.info(f"PCA explained variance: {pca.explained_variance_ratio_[0]:.3f}, "
+                        f"{pca.explained_variance_ratio_[1]:.3f}, {pca.explained_variance_ratio_[2]:.3f}")
+            
+            # Project archetypes
+            archetype_embedded = None
+            if archetype_latents is not None:
+                archetype_embedded = pca.transform(archetype_latents)
+        
+        elif method == "tsne":
+            # t-SNE projection
+            if n_samples < 50:
+                logging.warning(f"Skipping t-SNE: not enough samples ({n_samples} < 50)")
+                continue
+            
+            from sklearn.manifold import TSNE
+            perplexity = min(30.0, max(5.0, n_samples / 3))
+            tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity, n_iter=1000)
+            z_embedded = tsne.fit_transform(latents)
+            logging.info(f"t-SNE completed with perplexity={perplexity}")
+            
+            # Project archetypes
+            archetype_embedded = None
+            if archetype_latents is not None:
+                # t-SNE doesn't have transform(), need to fit on combined data
+                combined = np.vstack([latents, archetype_latents])
+                tsne_combined = TSNE(n_components=3, random_state=42, perplexity=perplexity, n_iter=1000)
+                z_combined = tsne_combined.fit_transform(combined)
+                z_embedded = z_combined[:n_samples]
+                archetype_embedded = z_combined[n_samples:]
+        
+        # Create interactive 3D visualization
+        output_filename = f"clustering_{method}_interactive.html"
+        output_path = pathlib.Path(output_dir) / output_filename
+        
+        latent_metrics.create_interactive_3d_visualization(
+            z_embedded_3d=z_embedded,
+            cluster_labels=cluster_labels,
+            archetype_embedded=archetype_embedded,
+            archetype_names=archetype_names if archetype_names else [],
+            archetype_cluster_labels=archetype_cluster_labels,
+            train_images=images,
+            colors=colors,
+            k=n_clusters,
+            viz_method=method.upper(),
+            epoch=0,  # Not applicable for standalone clustering
+            n_samples=n_samples,
+            latent_dim=latent_dim,
+            output_path=output_path
+        )
+        
+        logging.info(f"Saved {method.upper()} visualization to: {output_path}")
+    
+    logging.info(f"Clustering completed. Results saved to: {output_dir}")
+
+
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(message)s")
 
     if len(sys.argv) != 3:
-        logging.error(f"Usage : {sys.argv[0]} config.yaml <train|test|interpolate>")
+        logging.error(f"Usage : {sys.argv[0]} config.yaml <train|test|interpolate|clustering>")
         sys.exit(-1)
 
     logging.info("Loading {}".format(sys.argv[1]))
