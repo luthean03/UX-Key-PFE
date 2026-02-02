@@ -7,9 +7,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
 # Configuration
-INPUT_FOLDER = "./dataset/archetypes_phone/json"
+INPUT_FOLDER = "./dataset/vae_dataset/json"
 
-OUTPUT_FOLDER = "dataset/archetypes_phone/png"
+OUTPUT_FOLDER = "dataset/vae_dataset/png"
 MAX_WORKERS = min(8, multiprocessing.cpu_count() * 2)
 
 def ensure_folder_exists(folder_path):
