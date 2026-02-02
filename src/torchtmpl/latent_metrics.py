@@ -510,14 +510,6 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         
         # n_samples already calculated after concatenation
         perplexity = min(30.0, max(5.0, n_samples / 3))  # Adaptive perplexity based on sample size
-        
-        # Determine output directory for interactive HTML files
-        if writer is not None:
-            log_dir = pathlib.Path(writer.log_dir)
-            interactive_dir = log_dir / "interactive_viz"
-            interactive_dir.mkdir(exist_ok=True)
-        else:
-            interactive_dir = pathlib.Path("./interactive_viz")
             interactive_dir.mkdir(exist_ok=True)
         
         # Generate PCA projection (3 components for 3D viz)
@@ -576,25 +568,11 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
                     arch_embedded_2d = z_embedded_2d[indices.flatten()]
                     arch_embedded_3d = z_embedded_3d[indices.flatten()]
             
-            # ===== 1. Create Interactive 3D Plotly Visualization =====
-            output_path_3d = interactive_dir / f"epoch_{epoch:04d}_{viz_method.lower()}_3d.html"
-            create_interactive_3d_visualization(
-                z_embedded_3d, 
-                train_cluster_labels_full,
-                arch_embedded_3d, 
-                archetype_names, 
-                archetype_cluster_assignments_full,
-                train_images,
-                colors, 
-                k, 
-                viz_method, 
-                epoch, 
-                n_samples, 
-                latent_dim,
-                output_path_3d
-            )
+            # ===== Interactive 3D HTML generation removed =====
+            # Use the 'clustering' command to generate interactive HTML visualizations:
+            # python -m src.torchtmpl.main config/config-vae.yaml clustering
             
-            # ===== 2. Create Static 2D Matplotlib Visualization for TensorBoard =====
+            # ===== Create Static 2D Matplotlib Visualization for TensorBoard =====
             fig, ax = plt.subplots(figsize=(14, 10))
             
             # Colorier par cluster k-means (calculé sur l'espace latent complet)

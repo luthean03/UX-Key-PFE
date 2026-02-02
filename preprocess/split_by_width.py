@@ -86,9 +86,9 @@ def split_dataset_by_width(source_dir, phone_dir, pc_dir, width_threshold=800, m
 
 if __name__ == "__main__":
     # Configuration
-    SOURCE_DIR = "dataset/vae_dataset"
-    PHONE_DIR = "dataset/vae_dataset_phone"
-    PC_DIR = "dataset/vae_dataset_pc"
+    SOURCE_DIR = "dataset/vae_dataset/png"
+    PHONE_DIR = "dataset/vae_dataset_phone/all"
+    PC_DIR = "dataset/vae_dataset_pc/all"
     WIDTH_THRESHOLD = 800
     
     split_dataset_by_width(SOURCE_DIR, PHONE_DIR, PC_DIR, WIDTH_THRESHOLD)
