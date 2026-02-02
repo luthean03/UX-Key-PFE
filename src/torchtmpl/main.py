@@ -1272,7 +1272,8 @@ def clustering(config):
             
             from sklearn.manifold import TSNE
             perplexity = min(30.0, max(5.0, n_samples / 3))
-            tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity, n_iter=1000)
+            tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity,
+                       init="pca", learning_rate="auto")
             z_embedded = tsne.fit_transform(latents)
             logging.info(f"t-SNE completed with perplexity={perplexity}")
             
@@ -1281,7 +1282,8 @@ def clustering(config):
             if archetype_latents is not None:
                 # t-SNE doesn't have transform(), need to fit on combined data
                 combined = np.vstack([latents, archetype_latents])
-                tsne_combined = TSNE(n_components=3, random_state=42, perplexity=perplexity, n_iter=1000)
+                tsne_combined = TSNE(n_components=3, random_state=42, perplexity=perplexity,
+                                    init="pca", learning_rate="auto")
                 z_combined = tsne_combined.fit_transform(combined)
                 z_embedded = z_combined[:n_samples]
                 archetype_embedded = z_combined[n_samples:]
