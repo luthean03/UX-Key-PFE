@@ -1169,17 +1169,29 @@ def clustering(config):
             try:
                 # Load image
                 img = Image.open(img_path).convert('L')
+                w, h = img.size
                 
-                # Convert to tensor and normalize
-                img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
-                img_tensor = img_tensor.unsqueeze(0).unsqueeze(0).to(device)  # (1, 1, H, W)
+                # Convert to tensor
+                import torchvision.transforms.functional as TF
+                img_tensor = TF.to_tensor(img).unsqueeze(0)  # (1, 1, H, W)
                 
-                # Encode
-                mu, logvar = model.encode(img_tensor)
-                z = model.reparameterize(mu, logvar)
+                # Pad to multiple of 32 (same as training/validation)
+                stride = 32
+                pad_h = ((h + stride - 1) // stride) * stride
+                pad_w = ((w + stride - 1) // stride) * stride
                 
-                latents.append(z.cpu().numpy())
-                images.append(img_tensor.cpu())
+                padded_img = torch.zeros(1, 1, pad_h, pad_w)
+                mask = torch.zeros(1, 1, pad_h, pad_w)
+                padded_img[0, :, :h, :w] = img_tensor[0]
+                mask[0, 0, :h, :w] = 1.0
+                
+                # Encode using the padded tensor and mask
+                padded_img = padded_img.to(device)
+                mask = mask.to(device)
+                _, mu, _ = model(padded_img, mask=mask)
+                
+                latents.append(mu.cpu().numpy())
+                images.append(img_tensor[0].cpu())  # Store original (unpadded) image
                 
             except Exception as e:
                 logging.warning(f"Failed to encode {img_path}: {e}")
