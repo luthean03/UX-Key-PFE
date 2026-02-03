@@ -35,13 +35,13 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
     archetypes_path = pathlib.Path(archetypes_dir)
     if not archetypes_path.exists():
         logging.warning(f"Archetypes directory not found: {archetypes_dir}")
-        return None, None, None
+        return None, None, None, None
     
-    # Find all archetype images
-    archetype_files = sorted(list(archetypes_path.glob("*_linear.png")))
+    # Find all archetype images (PNG files without subdirectories)
+    archetype_files = sorted(list(archetypes_path.glob("*.png")))
     if len(archetype_files) == 0:
         logging.warning(f"No archetype images found in {archetypes_dir}")
-        return None, None, None
+        return None, None, None, None
     
     logging.info(f"Loading {len(archetype_files)} archetypes from {archetypes_dir}")
     
