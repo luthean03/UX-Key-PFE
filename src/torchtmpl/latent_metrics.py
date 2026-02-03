@@ -507,12 +507,6 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         from sklearn.manifold import TSNE
         from sklearn.decomposition import PCA
         import matplotlib.cm as cm
-        import pathlib
-        
-        # Create interactive visualizations directory in logs
-        logdir = pathlib.Path(writer.log_dir) if writer else pathlib.Path("./logs")
-        interactive_dir = logdir / "interactive_viz"
-        interactive_dir.mkdir(exist_ok=True, parents=True)
         
         # n_samples already calculated after concatenation
         perplexity = min(30.0, max(5.0, n_samples / 3))  # Adaptive perplexity based on sample size
@@ -572,11 +566,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
                     _, indices = nbrs.kneighbors(archetype_latents)
                     arch_embedded_2d = z_embedded_2d[indices.flatten()]
                     arch_embedded_3d = z_embedded_3d[indices.flatten()]
-            
-            # ===== Interactive 3D HTML generation removed =====
-            # Use the 'clustering' command to generate interactive HTML visualizations:
-            # python -m src.torchtmpl.main config/config-vae.yaml clustering
-            
+                                
             # ===== Create Static 2D Matplotlib Visualization for TensorBoard =====
             fig, ax = plt.subplots(figsize=(14, 10))
             
