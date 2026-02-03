@@ -4,9 +4,9 @@
 resume: null 
 
 data:
-  train_dir: "dataset/vae_dataset_pc/reduced_dataset/train"
-  valid_dir: "dataset/vae_dataset_pc/reduced_dataset/validation"
-  archetypes_dir: "dataset/archetypes_pc/png"  # Labeled wireframes for latent metrics
+  train_dir: "dataset/vae_dataset_pc/png_scaled/train"
+  valid_dir: "dataset/vae_dataset_pc/png_scaled/validation"
+  archetypes_dir: "dataset/archetypes_pc/png_scaled"  # Labeled wireframes for latent metrics
   batch_size: 8                    # SmartBatchSampler groups similar-sized images to minimize padding
   num_workers: 8                    # I/O parallelization
   seed: 42                          # Reproducibility
