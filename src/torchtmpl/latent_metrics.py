@@ -510,7 +510,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         
         # n_samples already calculated after concatenation
         perplexity = min(30.0, max(5.0, n_samples / 3))  # Adaptive perplexity based on sample size
-            interactive_dir.mkdir(exist_ok=True)
+        interactive_dir.mkdir(exist_ok=True)
         
         # Generate PCA projection (3 components for 3D viz)
         logging.info(f"Generating PCA projection (3 components for 3D)...")
