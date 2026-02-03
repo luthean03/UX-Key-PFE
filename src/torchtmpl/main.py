@@ -430,8 +430,8 @@ def train(config):
                 
                 # SimpleVAELoss retourne toujours 3 valeurs: (total, recon, kld)
                 total_loss, recon_loss, kld_loss = loss_result
-                train_recon_total += recon_loss.item()
-                train_kld_total += kld_loss.item()
+                train_recon_total += recon_loss.detach().item()
+                train_kld_total += kld_loss.detach().item()
                 
                 # Backward pass avec gradient accumulation
                 loss_for_backward = total_loss / grad_accumulation_steps
@@ -452,13 +452,20 @@ def train(config):
                         optimizer.step()
                         optimizer.zero_grad()
                     try:
-                        pbar.set_postfix(loss=f"{total_loss.item():.4f}", beta=f"{current_beta:.4f}")
+                        pbar.set_postfix(loss=f"{total_loss.detach().item():.4f}", beta=f"{current_beta:.4f}")
                     except Exception:
                         pass
 
                 bs = inputs.shape[0]
-                train_total += total_loss.item()
+                train_total += total_loss.detach().item()
                 train_samples += bs
+                
+                # Libérer mémoire explicitement
+                del total_loss, recon_loss, kld_loss, loss_for_backward, recon, mu, logvar, inputs, targets, masks
+                
+                # Nettoyage périodique du cache CUDA
+                if i % 50 == 0 and i > 0:
+                    torch.cuda.empty_cache()
 
             if (i + 1) % grad_accumulation_steps != 0:
                 if use_amp:
