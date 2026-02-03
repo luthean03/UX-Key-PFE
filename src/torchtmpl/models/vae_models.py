@@ -108,14 +108,20 @@ class CBAM(nn.Module):
         # 1. Channel Attention (Qu'est-ce qui est important ?)
         avg_out = self.fc(self.avg_pool(x))
         max_out = self.fc(self.max_pool(x))
-        out = x * self.sigmoid_channel(avg_out + max_out)
+        channel_att = self.sigmoid_channel(avg_out + max_out)
+        out = x * channel_att
         
         # 2. Spatial Attention (Où est-ce important ?)
+        # Utilisez un calcul plus efficace en mémoire
         avg_out = torch.mean(out, dim=1, keepdim=True)
         max_out, _ = torch.max(out, dim=1, keepdim=True)
-        spatial_out = self.sigmoid_spatial(self.conv_spatial(torch.cat([avg_out, max_out], dim=1)))
+        spatial_concat = torch.cat([avg_out, max_out], dim=1)
+        spatial_att = self.sigmoid_spatial(self.conv_spatial(spatial_concat))
         
-        return out * spatial_out
+        # Libérer la mémoire intermédiaire
+        del avg_out, max_out, spatial_concat, channel_att
+        
+        return out * spatial_att
 
 class ResidualBlock(nn.Module):
     def __init__(self, in_c, out_c, stride=1):
@@ -313,11 +319,15 @@ class VAE(nn.Module):
 
         # Blocs résiduels (qui acceptent le masque maintenant)
         e2 = self.enc_block1(e1, mask=m1)
+        del e1, m1  # Libérer mémoire
+        
         if mask is not None:
              m2 = F.interpolate(mask, size=e2.shape[2:], mode='nearest')
         else: m2 = None
 
         e3 = self.enc_block2(e2, mask=m2)
+        del e2, m2  # Libérer mémoire
+        
         if mask is not None:
              m3 = F.interpolate(mask, size=e3.shape[2:], mode='nearest')
         else: m3 = None
@@ -327,6 +337,8 @@ class VAE(nn.Module):
         else:
             features = self.enc_block3(e3, mask=m3)
         
+        del e3, m3  # Libérer mémoire
+        
         if mask is not None:
             m_feat = F.interpolate(mask, size=features.shape[2:], mode='nearest')
         else:
@@ -334,13 +346,17 @@ class VAE(nn.Module):
         
         # Masked SPP
         pooled = self.spp(features, mask=m_feat)
+        del features, m_feat  # Libérer mémoire
+        
         mu, logvar = self.fc_mu(pooled), self.fc_logvar(pooled)
         z = self.reparameterize(mu, logvar)
+        del pooled  # Libérer mémoire
 
         # Decode
         recon_small = self.decode(z)
         
         recon = F.interpolate(recon_small, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
+        del recon_small  # Libérer mémoire
         
         # Appliquer le masque final sur la reconstruction pour nettoyer la sortie
         if mask is not None:

@@ -12,6 +12,9 @@ import os
 import pathlib
 import sys
 
+# Set PyTorch memory allocator configuration for better memory management
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+
 # External imports
 import yaml
 import torch
