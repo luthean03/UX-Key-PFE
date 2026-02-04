@@ -4,7 +4,6 @@
 import torch
 
 # Local imports
-from .base_models import *
 from .cnn_models import *
 from .vae_models import *
 
