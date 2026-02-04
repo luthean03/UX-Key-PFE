@@ -36,8 +36,8 @@ mkdir -p $TMPDIR/code
 # Copy source code to local node for fast I/O (exclude heavy logs/datasets)
 rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude 'vae_dataset*' . $TMPDIR/code
 
-# Copy archetypes and dataset only for training
-if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then
+# Copy archetypes and dataset for training and clustering
+if [[ "{command}" == "train" || "{command}" == "train_test" || "{command}" == "clustering" ]]; then
     # Copy archetypes for latent metrics (from YAML config path)
     SRC_ARCHETYPES="{archetypes_src}"
     # Handle relative paths (relative to execution directory)
