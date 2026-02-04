@@ -458,26 +458,12 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         k = len(archetype_names)
         logging.info(f"Loaded {k} archetypes: {', '.join(archetype_names)}")
     
-    # 3. Compute latent density metrics (on full latent space)
-    density_metrics = compute_latent_density_metrics(train_latents, n_neighbors=5)
-    for key, value in density_metrics.items():
-        writer.add_scalar(f"latent/{key}", value, epoch)
-    
-    logging.info(f"Epoch {epoch} Density Metrics: {density_metrics}")
-    
-    # 4. K-means clustering on latent space before dimensionality reduction
+    # 3. K-means clustering on latent space before dimensionality reduction
     logging.info(f"Applying k-means (k={k}) on FULL {latent_dim}D latent space...")
     kmeans_full = KMeans(n_clusters=k, random_state=42, n_init=10)
     train_cluster_labels_full = kmeans_full.fit_predict(train_latents)
     
-    # Compute cluster metrics on full space
-    cluster_metrics_full = compute_cluster_metrics(train_latents, train_cluster_labels_full)
-    for key, value in cluster_metrics_full.items():
-        writer.add_scalar(f"latent/full_{latent_dim}d_{key}", value, epoch)
-    
-    logging.info(f"Epoch {epoch} Full {latent_dim}D Cluster Metrics (k-means on {latent_dim}D): {cluster_metrics_full}")
-    
-    # 5. Assign archetypes to clusters (on full latent space)
+    # 4. Assign archetypes to clusters (on full latent space)
     cluster_to_archetypes_full = {}
     archetype_cluster_assignments_full = None
     
@@ -502,7 +488,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             else:
                 logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
     
-    # 6. t-SNE/PCA Visualization with k-means clusters from full latent space
+    # 5. t-SNE/PCA Visualization with k-means clusters from full latent space
     try:
         from sklearn.manifold import TSNE
         from sklearn.decomposition import PCA
