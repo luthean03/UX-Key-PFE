@@ -36,8 +36,8 @@ mkdir -p $TMPDIR/code
 # Copy source code to local node for fast I/O (exclude heavy logs/datasets)
 rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude 'vae_dataset*' . $TMPDIR/code
 
-# Copy archetypes and dataset for training and clustering
-if [[ "{command}" == "train" || "{command}" == "train_test" || "{command}" == "clustering" ]]; then
+# Copy archetypes and dataset for training
+if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then
     # Copy archetypes for latent metrics (from YAML config path)
     SRC_ARCHETYPES="{archetypes_src}"
     # Handle relative paths (relative to execution directory)
@@ -86,8 +86,31 @@ if [[ "{command}" == "train" || "{command}" == "train_test" || "{command}" == "c
             echo "[OK] Dataset copied: $(find $TMPDIR/code/vae_dataset -type f | wc -l) files"
         fi
     fi
-else
-    echo "Skipping dataset/archetypes copy (not needed for {command})"
+fi
+
+# Copy data for clustering (separate case)
+if [[ "{command}" == "clustering" ]]; then
+    # Copy archetypes for reference (optional)
+    SRC_ARCHETYPES="{archetypes_src}"
+    if [[ "$SRC_ARCHETYPES" != /* ]]; then
+        SRC_ARCHETYPES="$current_dir/$SRC_ARCHETYPES"
+    fi
+    if [[ -d "$SRC_ARCHETYPES" ]]; then
+        echo "[OK] Copying archetypes from $SRC_ARCHETYPES to node..."
+        rsync -r "$SRC_ARCHETYPES/" "$TMPDIR/code/archetypes_png/"
+        echo "[OK] Archetypes copied: $(ls $TMPDIR/code/archetypes_png | wc -l) files"
+    fi
+
+    # Copy clustering dataset to node (from YAML config clustering.data_dir)
+    SRC_DATA="{data_src}"
+    if [[ "$SRC_DATA" != /* ]]; then
+        SRC_DATA="$current_dir/$SRC_DATA"
+    fi
+    if [[ -d "$SRC_DATA" ]]; then
+        echo "[OK] Copying clustering dataset from $SRC_DATA..."
+        rsync -r "$SRC_DATA/" "$TMPDIR/code/clustering_dataset/"
+        echo "[OK] Clustering dataset copied: $(find $TMPDIR/code/clustering_dataset -type f | wc -l) files"
+    fi
 fi
 
 # Copy test input directory for test/interpolate commands
@@ -214,6 +237,45 @@ if archetypes_dir:
         data_cfg['archetypes_dir'] = str(base / arch_path)
         print(f"[!] Using shared filesystem archetypes: {{base / arch_path}}")
     cfg['data'] = data_cfg
+
+# Patch clustering data directory (separate from training data)
+cluster_cfg = cfg.get('clustering') or dict()
+cluster_data_dir = cluster_cfg.get('data_dir')
+if cluster_data_dir:
+    cluster_path = pathlib.Path(cluster_data_dir).expanduser()
+    # Priority 1: Local clustering dataset on node
+    local_cluster = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'clustering_dataset'
+    if local_cluster.exists():
+        cluster_cfg['data_dir'] = str(local_cluster)
+        print(f"[OK] Using local clustering dataset on node: {{local_cluster}}")
+    # Priority 2: Absolute path (shared filesystem)
+    elif cluster_path.is_absolute():
+        cluster_cfg['data_dir'] = str(cluster_path)
+        print(f"[!] Using shared filesystem clustering data: {{cluster_path}}")
+    # Priority 3: Relative path
+    else:
+        cluster_cfg['data_dir'] = str(base / cluster_path)
+        print(f"[!] Using shared filesystem clustering data: {{base / cluster_path}}")
+    cfg['clustering'] = cluster_cfg
+
+# Patch clustering archetypes (separate from data.archetypes_dir)
+cluster_archetypes_dir = cluster_cfg.get('archetypes_dir')
+if cluster_archetypes_dir:
+    cluster_arch_path = pathlib.Path(cluster_archetypes_dir).expanduser()
+    # Priority 1: Local archetypes on node
+    local_archetypes = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'archetypes_png'
+    if local_archetypes.exists():
+        cluster_cfg['archetypes_dir'] = str(local_archetypes)
+        print(f"[OK] Using local clustering archetypes on node: {{local_archetypes}}")
+    # Priority 2: Absolute path (shared filesystem)
+    elif cluster_arch_path.is_absolute():
+        cluster_cfg['archetypes_dir'] = str(cluster_arch_path)
+        print(f"[!] Using shared filesystem clustering archetypes: {{cluster_arch_path}}")
+    # Priority 3: Relative path
+    else:
+        cluster_cfg['archetypes_dir'] = str(base / cluster_arch_path)
+        print(f"[!] Using shared filesystem clustering archetypes: {{base / cluster_arch_path}}")
+    cfg['clustering'] = cluster_cfg
 
 # Patch resume checkpoint path
 resume_path = cfg.get('resume')
@@ -458,6 +520,16 @@ with open(configpath, "r") as fp:
             data_src = None
         
         archetypes_src = data_cfg.get('archetypes_dir', 'archetypes_png')
+        
+        # Extract clustering data directory (separate from training data)
+        cluster_cfg = cfg_rsync.get('clustering', {})
+        cluster_data_src = cluster_cfg.get('data_dir')
+        
+        # If command is clustering, use clustering data_dir instead of training data
+        if command == 'clustering' and cluster_data_src:
+            data_src = cluster_data_src
+            train_src = None
+            valid_src = None
         
         # Extract test input directory
         test_cfg = cfg_rsync.get('test', {})
