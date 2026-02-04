@@ -387,33 +387,33 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
         return None
 
 
-def log_latent_space_visualization(model, train_loader, archetypes_dir, device, writer, epoch, max_height=2048, max_samples=1000):
+def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, writer, epoch, max_height=2048, max_samples=1000):
     """Generate and log comprehensive latent space visualizations to TensorBoard.
     
     Args:
         model: Trained VAE
-        train_loader: DataLoader du dataset d'entraînement
+        valid_loader: DataLoader du dataset de validation
         archetypes_dir: Path to archetypes (pour k-means avec k connu)
         device: torch.device
         writer: TensorBoard SummaryWriter
         epoch: Current epoch number
         max_height: Max image height
-        max_samples: Nombre max de samples du train set à encoder
+        max_samples: Nombre max de samples du validation set à encoder
     """
     import matplotlib.pyplot as plt
     from sklearn.cluster import KMeans
     import base64
     from io import BytesIO
     
-    # 1. Encoder le dataset d'entraînement complet
-    logging.info(f"Encoding training dataset (max {max_samples} samples)...")
+    # 1. Encoder le dataset de validation complet
+    logging.info(f"Encoding validation dataset (max {max_samples} samples)...")
     model.eval()
-    train_latents = []
-    train_indices = []
-    train_images = []  # Store images for interactive visualization
+    valid_latents = []
+    valid_indices = []
+    valid_images = []  # Store images for interactive visualization
     
     with torch.inference_mode():
-        for i, (inputs, targets, masks) in enumerate(train_loader):
+        for i, (inputs, targets, masks) in enumerate(valid_loader):
             if i >= max_samples:
                 break
             # Use targets (clean images) for latent space visualization
@@ -421,30 +421,30 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             targets = targets.to(device)
             masks = masks.to(device)
             _, mu, _ = model(targets, mask=masks)
-            train_latents.append(mu.cpu().numpy())
-            train_indices.append(i)
+            valid_latents.append(mu.cpu().numpy())
+            valid_indices.append(i)
             # Store ALL images from batch for visualization
             for j in range(targets.size(0)):
                 img_tensor = targets[j].cpu()  # (1, H, W)
-                train_images.append(img_tensor)
+                valid_images.append(img_tensor)
     
-    if len(train_latents) == 0:
-        logging.warning("No training samples encoded, skipping visualization")
+    if len(valid_latents) == 0:
+        logging.warning("No validation samples encoded, skipping visualization")
         return
     
-    train_latents = np.concatenate(train_latents, axis=0)  # (N, latent_dim)
-    latent_dim = train_latents.shape[1]  # Get actual latent dimension from data
-    n_samples = len(train_latents)  # Total number of samples (not batches!)
+    valid_latents = np.concatenate(valid_latents, axis=0)  # (N, latent_dim)
+    latent_dim = valid_latents.shape[1]  # Get actual latent dimension from data
+    n_samples = len(valid_latents)  # Total number of samples (not batches!)
     
-    logging.info(f"Encoded {n_samples} training samples (latent_dim={latent_dim})")
-    logging.info(f"Collected {len(train_images)} images for visualization")
+    logging.info(f"Encoded {n_samples} validation samples (latent_dim={latent_dim})")
+    logging.info(f"Collected {len(valid_images)} images for visualization")
     
     # Verify that we have the same number of latents and images
-    if len(train_images) != n_samples:
-        logging.warning(f"Mismatch: {n_samples} latents but {len(train_images)} images. Truncating to minimum.")
-        min_len = min(n_samples, len(train_images))
-        train_latents = train_latents[:min_len]
-        train_images = train_images[:min_len]
+    if len(valid_images) != n_samples:
+        logging.warning(f"Mismatch: {n_samples} latents but {len(valid_images)} images. Truncating to minimum.")
+        min_len = min(n_samples, len(valid_images))
+        valid_latents = valid_latents[:min_len]
+        valid_images = valid_images[:min_len]
         n_samples = min_len
     
     # 2. Charger archetypes pour déterminer k
@@ -461,7 +461,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
     # 3. K-means clustering on latent space before dimensionality reduction
     logging.info(f"Applying k-means (k={k}) on FULL {latent_dim}D latent space...")
     kmeans_full = KMeans(n_clusters=k, random_state=42, n_init=10)
-    train_cluster_labels_full = kmeans_full.fit_predict(train_latents)
+    valid_cluster_labels_full = kmeans_full.fit_predict(valid_latents)
     
     # 4. Assign archetypes to clusters (on full latent space)
     cluster_to_archetypes_full = {}
@@ -500,7 +500,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
         # Generate PCA projection (3 components for 3D viz)
         logging.info(f"Generating PCA projection (3 components for 3D)...")
         pca_3d = PCA(n_components=3, random_state=42)
-        z_pca_3d = pca_3d.fit_transform(train_latents)
+        z_pca_3d = pca_3d.fit_transform(valid_latents)
         logging.info(f"PCA explained variance: {pca_3d.explained_variance_ratio_[0]:.3f}, "
                     f"{pca_3d.explained_variance_ratio_[1]:.3f}, {pca_3d.explained_variance_ratio_[2]:.3f}")
         
@@ -513,7 +513,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             logging.info(f"Generating t-SNE 3D projection with perplexity={perplexity:.1f} (n_samples={n_samples})")
             tsne_3d = TSNE(n_components=3, random_state=42, perplexity=perplexity, 
                           init="pca", learning_rate="auto")
-            z_tsne_3d = tsne_3d.fit_transform(train_latents)
+            z_tsne_3d = tsne_3d.fit_transform(valid_latents)
             z_tsne_2d = z_tsne_3d[:, :2]
             
             visualizations_2d = [("PCA", z_pca_2d, pca_3d), ("t-SNE", z_tsne_2d, None)]
@@ -548,7 +548,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
                     arch_embedded_3d = projection_model_3d.transform(archetype_latents)
                 else:  # t-SNE - utiliser KNN pour approximation
                     from sklearn.neighbors import NearestNeighbors
-                    nbrs = NearestNeighbors(n_neighbors=1).fit(train_latents)
+                    nbrs = NearestNeighbors(n_neighbors=1).fit(valid_latents)
                     _, indices = nbrs.kneighbors(archetype_latents)
                     arch_embedded_2d = z_embedded_2d[indices.flatten()]
                     arch_embedded_3d = z_embedded_3d[indices.flatten()]
@@ -558,7 +558,7 @@ def log_latent_space_visualization(model, train_loader, archetypes_dir, device, 
             
             # Colorier par cluster k-means (calculé sur l'espace latent complet)
             for cluster_id in range(k):
-                mask = train_cluster_labels_full == cluster_id
+                mask = valid_cluster_labels_full == cluster_id
                 if np.sum(mask) > 0:
                     # Nom du cluster (archetype correspondant si disponible)
                     if archetype_latents is not None and cluster_id in cluster_to_archetypes_full:

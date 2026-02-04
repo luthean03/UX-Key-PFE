@@ -640,7 +640,7 @@ def train(config):
                     if archetypes_dir and pathlib.Path(archetypes_dir).exists() and writer is not None:
                         logging.info(f"Computing latent space metrics (epoch {e}) from {archetypes_dir} (max_samples={tsne_max_samples})...")
                         latent_metrics.log_latent_space_visualization(
-                            model, train_loader, archetypes_dir, device, writer, e, max_samples=tsne_max_samples
+                            model, valid_loader, archetypes_dir, device, writer, e, max_samples=tsne_max_samples
                         )
                     elif not archetypes_dir:
                         logging.debug("Skipping latent metrics: archetypes_dir not specified in config")
