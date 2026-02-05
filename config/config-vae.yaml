@@ -33,7 +33,7 @@ data:
 model:
   name: "vae"
   class: "VAE"                   # Must match class in vae_models.py
-  latent_dim: 128                # Latent space dimensionality
+  latent_dim: 32                # Latent space dimensionality
   input_channels: 1              # Grayscale images
   dropout_p: 0.1                 # Dropout in decoder
   # use_skip_connections: false  # Skip connections disabled (can cause posterior collapse in VAE)
@@ -125,7 +125,7 @@ interpolate:
 # Clustering configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml clustering
 clustering:
-  model_path: "logs/VAE_2/last_model.pt"           # Path to trained model checkpoint
+  model_path: "logs/VAE_3/last_model.pt"           # Path to trained model checkpoint
   data_dir: "dataset/vae_dataset_pc/png_scaled/validation"  # Directory containing images to cluster
   output_dir: null                                  # Output directory (null = same as model directory)
   max_samples: 4000                                 # Maximum number of samples to process
