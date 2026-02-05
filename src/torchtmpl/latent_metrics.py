@@ -356,27 +356,32 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
       #hover-tooltip {{
         position: fixed;
         background: white;
-        border: 2px solid #333;
-        border-radius: 8px;
-        padding: 10px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        border: 3px solid #2c3e50;
+        border-radius: 10px;
+        padding: 15px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
         pointer-events: none;
         z-index: 9999;
         display: none;
-        max-width: 400px;
+        max-width: 450px;
+        min-width: 300px;
       }}
       #hover-tooltip img {{
         display: block;
-        max-width: 100%;
+        width: 100%;
         height: auto;
-        border-radius: 4px;
+        border-radius: 6px;
+        background: #f5f5f5;
+        min-height: 60px;
       }}
       #hover-tooltip .info {{
-        margin-top: 8px;
-        font-family: Arial, sans-serif;
-        font-size: 14px;
-        color: #333;
+        margin-top: 12px;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: 16px;
+        font-weight: 600;
+        color: #2c3e50;
         text-align: center;
+        line-height: 1.4;
       }}
     </style>
   </head>
@@ -395,6 +400,14 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
       var tooltip = document.getElementById('hover-tooltip');
       var tooltipImg = document.getElementById('tooltip-img');
       var tooltipText = document.getElementById('tooltip-text');
+      var lastMouseX = 0;
+      var lastMouseY = 0;
+      
+      // Track mouse position globally
+      document.addEventListener('mousemove', function(e) {{{{
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+      }}}});
       
       // Click to open full image
       gd.on('plotly_click', function(eventData) {{{{
@@ -436,13 +449,23 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
             tooltipText.innerHTML = '<b>' + name + '</b><br>' + cluster;
             tooltip.style.display = 'block';
             
-            // Position tooltip near mouse
-            var bbox = gd.getBoundingClientRect();
-            tooltip.style.left = (eventData.event.clientX + 15) + 'px';
-            tooltip.style.top = (eventData.event.clientY - 100) + 'px';
+            // Position tooltip using tracked mouse position
+            var x = lastMouseX + 20;
+            var y = lastMouseY - 150;
+            
+            // Keep tooltip in viewport
+            if (x + 500 > window.innerWidth) {{{{
+              x = lastMouseX - 520;
+            }}}}
+            if (y < 0) {{{{
+              y = 10;
+            }}}}
+            
+            tooltip.style.left = x + 'px';
+            tooltip.style.top = y + 'px';
           }}}}
         }}}} catch (e) {{{{
-          console.warn('Hover error', e);
+          console.error('Hover error', e);
         }}}}
       }}}});
       
