@@ -247,11 +247,14 @@ def compute_latent_density_metrics(latents, n_neighbors=5):
 
 def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype_embedded, archetype_names,
     archetype_cluster_labels, train_images, colors, k,
-    viz_method, epoch, n_samples, latent_dim, output_path):
+    viz_method, epoch, n_samples, latent_dim, output_path, train_image_names=None):
     """Create interactive 3D visualization with Plotly and image thumbnails.
 
     The visualization embeds thumbnail images as base64 data URIs for hover
     and opens the full thumbnail in a new window when a point is clicked.
+    
+    Args:
+        train_image_names: Optional list of image names (filenames without extension)
     """
     try:
         import plotly.graph_objects as go
@@ -293,9 +296,12 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
             for idx in cluster_indices:
                 if idx < len(train_images):
                     img_b64 = tensor_to_base64(train_images[idx])
-                    hover_texts.append(f"<img src='{img_b64}' width='150'><br>Sample {idx}<br>Cluster {cluster_id}")
+                    # Use real filename if available, otherwise fallback to Sample N
+                    img_name = train_image_names[idx] if train_image_names and idx < len(train_image_names) else f"Sample {idx}"
+                    hover_texts.append(f"<img src='{img_b64}' width='150'><br>{img_name}<br>Cluster {cluster_id}")
                 else:
-                    hover_texts.append(f"Sample {idx}<br>Cluster {cluster_id}")
+                    img_name = train_image_names[idx] if train_image_names and idx < len(train_image_names) else f"Sample {idx}"
+                    hover_texts.append(f"{img_name}<br>Cluster {cluster_id}")
 
             color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
             fig.add_trace(go.Scatter3d(
@@ -335,7 +341,11 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
         )
 
         images_base64 = [tensor_to_base64(img) for img in train_images]
-        image_names = [f"Sample {i}" for i in range(len(images_base64))]
+        # Use real filenames if provided, otherwise use Sample N
+        if train_image_names and len(train_image_names) == len(images_base64):
+            image_names = train_image_names
+        else:
+            image_names = [f"Sample {i}" for i in range(len(images_base64))]
 
         fig_json = fig.to_json()
         html = f"""

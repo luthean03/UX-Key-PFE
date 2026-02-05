@@ -1172,6 +1172,7 @@ def clustering(config):
     # Encode images
     latents = []
     images = []
+    image_names = []  # Store real filenames
     
     model.eval()
     with torch.no_grad():
@@ -1202,6 +1203,7 @@ def clustering(config):
                 
                 latents.append(mu.cpu().numpy())
                 images.append(img_tensor[0].cpu())  # Store original (unpadded) image
+                image_names.append(img_path.stem)  # Store filename without extension
                 
             except Exception as e:
                 logging.warning(f"Failed to encode {img_path}: {e}")
@@ -1309,6 +1311,7 @@ def clustering(config):
             archetype_names=archetype_names if archetype_names else [],
             archetype_cluster_labels=archetype_cluster_labels,
             train_images=images,
+            train_image_names=image_names,  # Pass real filenames
             colors=colors,
             k=n_clusters,
             viz_method=method.upper(),
