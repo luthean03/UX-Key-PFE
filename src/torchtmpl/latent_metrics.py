@@ -247,7 +247,7 @@ def compute_latent_density_metrics(latents, n_neighbors=5):
 
 def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype_embedded, archetype_names,
     archetype_cluster_labels, train_images, colors, k,
-    viz_method, epoch, n_samples, latent_dim, output_path, train_image_names=None):
+    viz_method, epoch, n_samples, latent_dim, output_path, train_image_names=None, archetype_images=None):
     """Create interactive 3D visualization with Plotly and image thumbnails.
 
     The visualization embeds thumbnail images as base64 data URIs for hover
@@ -255,6 +255,7 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
     
     Args:
         train_image_names: Optional list of image names (filenames without extension)
+        archetype_images: Optional list of archetype image tuples (padded, mask, h, w)
     """
     try:
         import plotly.graph_objects as go
@@ -317,6 +318,8 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
         if archetype_embedded is not None and len(archetype_embedded) > 0:
             for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_labels)):
                 color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
+                # archetype index in combined images list = n_samples + i
+                archetype_idx = len(train_images) + i
                 fig.add_trace(go.Scatter3d(
                     x=[archetype_embedded[i, 0]],
                     y=[archetype_embedded[i, 1]],
@@ -327,7 +330,8 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
                     text=[name],
                     textposition='top center',
                     textfont=dict(size=10, color='black'),
-                    hovertemplate=f'<b>{name}</b><br>Cluster {cluster_id}<extra></extra>'
+                    hovertemplate=f'<b>{name}</b><br>Cluster {cluster_id}<extra></extra>',
+                    customdata=[archetype_idx]
                 ))
 
         fig.update_layout(
@@ -342,6 +346,17 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
             image_names = train_image_names
         else:
             image_names = [f"Sample {i}" for i in range(len(images_base64))]
+        
+        # Add archetype images and names
+        if archetype_images is not None and len(archetype_images) > 0:
+            for i, (padded, mask, h, w) in enumerate(archetype_images):
+                # Extract the original image (unpadded) from padded tensor
+                arch_img = padded[0, :, :h, :w]  # (C, H, W)
+                images_base64.append(tensor_to_base64(arch_img))
+            
+            # Add archetype names
+            if archetype_names:
+                image_names.extend([f"★ {name}" for name in archetype_names])
 
         fig_json = fig.to_json()
         html = f"""
@@ -407,29 +422,6 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
       document.addEventListener('mousemove', function(e) {{{{
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
-      }}}});
-      
-      // Click to open full image
-      gd.on('plotly_click', function(eventData) {{{{
-        try {{{{
-          var pt = eventData.points[0];
-          var idx = pt.customdata;
-          if (Array.isArray(idx)) idx = idx[0];
-          if (idx == null) return;
-          var img = images[idx];
-          var title = names[idx] || 'Image';
-          if (!img) {{{{ alert('Image not available'); return; }}}}
-          var w = window.open('about:blank', '_blank');
-          if (w) {{{{ 
-            w.document.write('<title>' + title + '</title>'); 
-            w.document.write('<img src="' + img + '" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>'); 
-            w.document.close(); 
-          }}}} else {{{{ 
-            alert('Unable to open new window - popup blocked.'); 
-          }}}}
-        }}}} catch (e) {{{{ 
-          console.warn('Click handler error', e); 
-        }}}}
       }}}});
       
       // Hover to show tooltip with image preview

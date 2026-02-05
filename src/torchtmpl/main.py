@@ -1312,6 +1312,7 @@ def clustering(config):
             archetype_cluster_labels=archetype_cluster_labels,
             train_images=images,
             train_image_names=image_names,  # Pass real filenames
+            archetype_images=archetype_images,  # Pass archetype images
             colors=colors,
             k=n_clusters,
             viz_method=method.upper(),
