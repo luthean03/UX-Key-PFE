@@ -33,7 +33,7 @@ data:
 model:
   name: "vae"
   class: "VAE"                   # Must match class in vae_models.py
-  latent_dim: 128                # Latent space dimensionality
+  latent_dim: 64                # Latent space dimensionality
   input_channels: 1              # Grayscale images
   dropout_p: 0.1                 # Dropout in decoder
   # use_skip_connections: false  # Skip connections disabled (can cause posterior collapse in VAE)
@@ -50,7 +50,7 @@ model:
 # Therefore beta_kld = 1.0 restores proper balance without posterior collapse
 loss:
   name: "l1"                     # 'l1', 'mse', or 'perceptual'
-  beta_kld: 10000                  # Using sum reduction: naturally balanced at 1.0
+  beta_kld: 1                  # Using sum reduction: naturally balanced at 1.0
   loss_scale: 1                  # No scaling (natural values for debugging)
   warmup_epochs: 0               # KLD warmup epochs (prevents early posterior collapse)
   
