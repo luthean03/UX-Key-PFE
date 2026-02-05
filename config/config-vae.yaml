@@ -33,7 +33,7 @@ data:
 model:
   name: "vae"
   class: "VAE"                   # Must match class in vae_models.py
-  latent_dim: 64                # Latent space dimensionality
+  latent_dim: 128                # Latent space dimensionality
   input_channels: 1              # Grayscale images
   dropout_p: 0.1                 # Dropout in decoder
   # use_skip_connections: false  # Skip connections disabled (can cause posterior collapse in VAE)
