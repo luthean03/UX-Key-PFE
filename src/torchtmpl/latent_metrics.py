@@ -363,16 +363,16 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
         pointer-events: none;
         z-index: 9999;
         display: none;
-        max-width: 450px;
-        min-width: 300px;
+        max-width: 280px;
+        max-height: 400px;
       }}
       #hover-tooltip img {{
         display: block;
         width: 100%;
-        height: auto;
+        max-height: 200px;
+        object-fit: contain;
         border-radius: 6px;
         background: #f5f5f5;
-        min-height: 60px;
       }}
       #hover-tooltip .info {{
         margin-top: 12px;
@@ -451,14 +451,17 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
             
             // Position tooltip using tracked mouse position
             var x = lastMouseX + 20;
-            var y = lastMouseY - 150;
+            var y = lastMouseY - 120;
             
             // Keep tooltip in viewport
-            if (x + 500 > window.innerWidth) {{{{
-              x = lastMouseX - 520;
+            if (x + 300 > window.innerWidth) {{{{
+              x = lastMouseX - 300;
             }}}}
             if (y < 0) {{{{
               y = 10;
+            }}}}
+            if (y + 400 > window.innerHeight) {{{{
+              y = window.innerHeight - 420;
             }}}}
             
             tooltip.style.left = x + 'px';
