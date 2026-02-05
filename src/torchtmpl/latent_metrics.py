@@ -294,14 +294,10 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
 
             hover_texts = []
             for idx in cluster_indices:
-                if idx < len(train_images):
-                    img_b64 = tensor_to_base64(train_images[idx])
-                    # Use real filename if available, otherwise fallback to Sample N
-                    img_name = train_image_names[idx] if train_image_names and idx < len(train_image_names) else f"Sample {idx}"
-                    hover_texts.append(f"<img src='{img_b64}' width='150'><br>{img_name}<br>Cluster {cluster_id}")
-                else:
-                    img_name = train_image_names[idx] if train_image_names and idx < len(train_image_names) else f"Sample {idx}"
-                    hover_texts.append(f"{img_name}<br>Cluster {cluster_id}")
+                # Use real filename if available, otherwise fallback to Sample N
+                img_name = train_image_names[idx] if train_image_names and idx < len(train_image_names) else f"Sample {idx}"
+                # Simple text hover (image preview handled by custom tooltip)
+                hover_texts.append(f"<b>{img_name}</b><br>Cluster {cluster_id}")
 
             color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
             fig.add_trace(go.Scatter3d(
@@ -355,16 +351,52 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
     <meta charset="utf-8" />
     <title>Interactive 3D {viz_method} - Epoch {epoch}</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>body {{ margin:0; }}</style>
+    <style>
+      body {{ margin:0; }}
+      #hover-tooltip {{
+        position: fixed;
+        background: white;
+        border: 2px solid #333;
+        border-radius: 8px;
+        padding: 10px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        pointer-events: none;
+        z-index: 9999;
+        display: none;
+        max-width: 400px;
+      }}
+      #hover-tooltip img {{
+        display: block;
+        max-width: 100%;
+        height: auto;
+        border-radius: 4px;
+      }}
+      #hover-tooltip .info {{
+        margin-top: 8px;
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        color: #333;
+        text-align: center;
+      }}
+    </style>
   </head>
   <body>
     <div id="plotly-div" style="width:100%;height:100vh;"></div>
+    <div id="hover-tooltip">
+      <img id="tooltip-img" src="" alt="Preview">
+      <div class="info" id="tooltip-text"></div>
+    </div>
     <script>
       var fig = {fig_json};
       Plotly.newPlot('plotly-div', fig.data, fig.layout, fig.config || {{}});
       var images = {json.dumps(images_base64)};
       var names = {json.dumps(image_names)};
       var gd = document.getElementById('plotly-div');
+      var tooltip = document.getElementById('hover-tooltip');
+      var tooltipImg = document.getElementById('tooltip-img');
+      var tooltipText = document.getElementById('tooltip-text');
+      
+      // Click to open full image
       gd.on('plotly_click', function(eventData) {{{{
         try {{{{
           var pt = eventData.points[0];
@@ -375,8 +407,48 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
           var title = names[idx] || 'Image';
           if (!img) {{{{ alert('Image not available'); return; }}}}
           var w = window.open('about:blank', '_blank');
-          if (w) {{{{ w.document.write('<title>' + title + '</title>'); w.document.write('<img src="' + img + '" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>'); w.document.close(); }}}} else {{{{ alert('Unable to open new window - popup blocked.'); }}}}
-        }}}} catch (e) {{{{ console.warn('Click handler error', e); }}}}
+          if (w) {{{{ 
+            w.document.write('<title>' + title + '</title>'); 
+            w.document.write('<img src="' + img + '" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>'); 
+            w.document.close(); 
+          }}}} else {{{{ 
+            alert('Unable to open new window - popup blocked.'); 
+          }}}}
+        }}}} catch (e) {{{{ 
+          console.warn('Click handler error', e); 
+        }}}}
+      }}}});
+      
+      // Hover to show tooltip with image preview
+      gd.on('plotly_hover', function(eventData) {{{{
+        try {{{{
+          var pt = eventData.points[0];
+          var idx = pt.customdata;
+          if (Array.isArray(idx)) idx = idx[0];
+          if (idx == null || idx >= images.length) return;
+          
+          var img = images[idx];
+          var name = names[idx] || 'Sample ' + idx;
+          var cluster = pt.fullData.name || 'Unknown';
+          
+          if (img) {{{{
+            tooltipImg.src = img;
+            tooltipText.innerHTML = '<b>' + name + '</b><br>' + cluster;
+            tooltip.style.display = 'block';
+            
+            // Position tooltip near mouse
+            var bbox = gd.getBoundingClientRect();
+            tooltip.style.left = (eventData.event.clientX + 15) + 'px';
+            tooltip.style.top = (eventData.event.clientY - 100) + 'px';
+          }}}}
+        }}}} catch (e) {{{{
+          console.warn('Hover error', e);
+        }}}}
+      }}}});
+      
+      // Hide tooltip on unhover
+      gd.on('plotly_unhover', function() {{{{
+        tooltip.style.display = 'none';
       }}}});
     </script>
   </body>
