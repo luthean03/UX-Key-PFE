@@ -18,7 +18,10 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 # External imports
 import yaml
 import torch
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
 import torchinfo.torchinfo as torchinfo
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -130,6 +133,9 @@ from . import latent_metrics
 def _setup_wandb(config: dict):
     logging_cfg = config.get("logging", {})
     if isinstance(logging_cfg, dict) and "wandb" in logging_cfg:
+        if wandb is None:
+            logging.warning("wandb requested in config but not installed; skipping")
+            return None
         wandb_config = logging_cfg["wandb"]
         wandb.init(project=wandb_config["project"], entity=wandb_config["entity"])
         wandb.log(config)
@@ -186,8 +192,9 @@ def _avg_ssim_on_loader(model, loader, device):
 
     model.eval()
     with torch.no_grad():
-        for inputs, targets in loader:
-            inputs, targets = inputs.to(device), targets.to(device)
+        for batch in loader:
+            # Support both (inputs, targets) and (inputs, targets, masks) from collate
+            inputs, targets = batch[0].to(device), batch[1].to(device)
             out = model(inputs)
             recon = out[0] if isinstance(out, (tuple, list)) else out
             try:

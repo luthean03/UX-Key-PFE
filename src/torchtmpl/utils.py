@@ -179,8 +179,9 @@ def train(model, loader, f_loss, optimizer, device, dynamic_display=True):
 
     total_loss = 0
     num_samples = 0
-    for i, (inputs, targets) in (pbar := tqdm.tqdm(enumerate(loader))):
-
+    for i, batch in (pbar := tqdm.tqdm(enumerate(loader))):
+        # Support both (inputs, targets) and (inputs, targets, masks) from collate
+        inputs, targets = batch[0], batch[1]
         inputs, targets = inputs.to(device), targets.to(device)
 
         # Compute the forward propagation
@@ -220,8 +221,9 @@ def test(model, loader, f_loss, device):
 
     total_loss = 0
     num_samples = 0
-    for (inputs, targets) in loader:
-
+    for batch in loader:
+        # Support both (inputs, targets) and (inputs, targets, masks) from collate
+        inputs, targets = batch[0], batch[1]
         inputs, targets = inputs.to(device), targets.to(device)
 
         # Compute the forward propagation
