@@ -125,7 +125,7 @@ interpolate:
 # Clustering configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml clustering
 clustering:
-  model_path: "logs/VAE_3/last_model.pt"           # Path to trained model checkpoint
+  model_path: "logs/VAE_0/last_model.pt"           # Path to trained model checkpoint
   data_dir: "dataset/vae_dataset_pc/png_scaled/validation"  # Directory containing images to cluster
   output_dir: null                                  # Output directory (null = same as model directory)
   max_samples: 4000                                 # Maximum number of samples to process
