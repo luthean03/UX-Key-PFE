@@ -38,4 +38,4 @@ def batch_scale_images(image_dir, output_dir, scale_factor=0.5, max_workers=12):
 if __name__ == "__main__":
     image_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/archetypes_phone/png"
     output_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE//dataset/archetypes_phone/png_scaled"
-    batch_scale_images(image_dir, output_dir, scale_factor=0.4, max_workers=8)
+    batch_scale_images(image_dir, output_dir, scale_factor=0.2, max_workers=8)
