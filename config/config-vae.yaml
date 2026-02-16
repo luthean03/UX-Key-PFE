@@ -12,7 +12,7 @@ data:
   seed: 42                          # Reproducibility
   
   # Memory management
-  max_height: 1500                  # Maximum height (crop if exceeded)
+  max_height: 3000                  # Maximum height (crop if exceeded)
   
   # Denoising augmentation
   noise_level: 0.20                 # Gaussian noise level for robustness
