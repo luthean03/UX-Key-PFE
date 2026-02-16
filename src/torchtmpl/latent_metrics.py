@@ -187,10 +187,6 @@ def compute_cluster_metrics(latents, labels):
     return metrics
 
 
-# Import SLERP from centralized location
-from .utils import slerp_numpy as slerp
-
-
 def compute_latent_density_metrics(latents, n_neighbors=5):
     """Compute latent space density and coverage.
     

@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 
 # SSIM Loss Implementation
@@ -337,35 +336,6 @@ class PerceptualVAELoss(nn.Module):
         total_scaled = total * self.scale
         
         return total_scaled, recon_loss, kld_loss
-
-
-# Latent Regularization Implementation
-class LatentRegularization(nn.Module):
-    """Additional latent space regularization for structured clustering.
-    
-    Encourages:
-    - Uniform utilization of latent dimensions
-    - Separation between different archetypes (if labels available)
-    - Smooth interpolation paths
-    """
-    
-    def __init__(self, lambda_dim_kl: float = 0.1):
-        super().__init__()
-        self.lambda_dim_kl = lambda_dim_kl
-    
-    def dimension_kl(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """Per-dimension KL to encourage all dimensions are used equally."""
-        # Average KL per dimension across batch
-        dim_kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())  # (B, D)
-        dim_kl_mean = dim_kl.mean(dim=0)  # (D,)
-        
-        # Encourage uniform distribution of information across dimensions
-        # by minimizing variance of per-dimension KL
-        kl_variance = dim_kl_mean.var()
-        return kl_variance
-    
-    def forward(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        return self.lambda_dim_kl * self.dimension_kl(mu, logvar)
 
 
 # Factory function

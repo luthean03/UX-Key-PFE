@@ -11,7 +11,6 @@ and GroupNorm to work with batch_size=1.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 from typing import Optional
 
 
@@ -138,7 +137,6 @@ class ResidualBlock(nn.Module):
         
         self.cbam = CBAM(out_c) 
         
-        self.shortcut = nn.Sequential()
         self.use_projection = (stride != 1 or in_c != out_c)
         if self.use_projection:
             self.shortcut_conv = nn.Conv2d(in_c, out_c, 1, stride, bias=False)

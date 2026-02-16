@@ -373,6 +373,16 @@ def train(config):
             scaler = None
             logging.info("Mixed Precision Training (AMP) disabled")
 
+        # Mixup/CutMix configuration (read once before the loop)
+        use_mixup = optim_conf.get("use_mixup", False)
+        use_cutmix = optim_conf.get("use_cutmix", False)
+        mixup_alpha = optim_conf.get("mixup_alpha", 0.2)
+        cutmix_alpha = optim_conf.get("cutmix_alpha", 1.0)
+        mix_prob = optim_conf.get("mix_prob", 0.5)
+
+        # SSIM metric (instantiated once, reused every epoch)
+        ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
+
         optimizer.zero_grad()
         for e in range(config["nepochs"]):
             # KL annealing
@@ -404,13 +414,6 @@ def train(config):
             # Accumulateurs pour composantes de loss (recon + KLD)
             train_recon_total = 0.0
             train_kld_total = 0.0
-            
-            # Mixup/CutMix configuration
-            use_mixup = optim_conf.get("use_mixup", False)
-            use_cutmix = optim_conf.get("use_cutmix", False)
-            mixup_alpha = optim_conf.get("mixup_alpha", 0.2)
-            cutmix_alpha = optim_conf.get("cutmix_alpha", 1.0)
-            mix_prob = optim_conf.get("mix_prob", 0.5)
             
             pbar = tqdm(train_loader, desc=f"Epoch {e}/{config['nepochs']}", dynamic_ncols=True)
             for i, (inputs, targets, masks) in enumerate(pbar):
@@ -469,10 +472,6 @@ def train(config):
                 
                 # Libérer mémoire explicitement
                 del total_loss, recon_loss, kld_loss, loss_for_backward, recon, mu, logvar, inputs, targets, masks
-                
-                # Nettoyage périodique du cache CUDA
-                if i % 50 == 0 and i > 0:
-                    torch.cuda.empty_cache()
 
             if (i + 1) % grad_accumulation_steps != 0:
                 if use_amp:
@@ -496,7 +495,6 @@ def train(config):
             val_recon_total = 0.0
             val_kld_total = 0.0
             
-            ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
             total_ssim = 0.0
             ssim_count = 0
             with torch.no_grad():
@@ -653,38 +651,6 @@ def train(config):
                         logging.debug("Skipping latent metrics: archetypes_dir not specified in config")
                 except Exception as ex:
                     logging.warning(f"Latent metrics failed: {ex}")
-
-        # Latent visualization
-        if TSNE is not None:
-            try:
-                logging.info("Generating Latent Space Visualization...")
-                model.eval()
-                latents = []
-                with torch.no_grad():
-                    for i, (inputs, targets, masks) in enumerate(valid_loader):
-                        if i >= 1000:
-                            break
-                        # Use targets (clean images) for latent visualization
-                        targets = targets.to(device)
-                        masks = masks.to(device)
-                        _, mu, _ = model(targets, mask=masks)
-                        latents.append(mu.cpu().numpy())
-                if latents:
-                    latents = np.concatenate(latents, axis=0)
-                    tsne = TSNE(n_components=2, random_state=42, init="pca", learning_rate="auto")
-                    z_embedded = tsne.fit_transform(latents)
-                    plt.figure(figsize=(8, 8))
-                    plt.scatter(z_embedded[:, 0], z_embedded[:, 1], alpha=0.6, s=8)
-                    plt.title("Latent Space Visualization (t-SNE)")
-                    plt.grid(True, alpha=0.3)
-                    save_path = logdir / "latent_space_tsne.png"
-                    plt.savefig(save_path)
-                    plt.close()
-                    logging.info(f"Latent plot saved to {save_path}")
-            except Exception as ex:
-                logging.warning(f"Latent visualization failed: {ex}")
-        else:
-            logging.warning("TSNE not available (scikit-learn not installed); skipping latent visualization")
 
     else:
         # Cas des modèles classiques (CNN, ResNet, etc.)

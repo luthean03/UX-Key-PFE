@@ -289,7 +289,7 @@ def get_dataloaders(data_config, use_cuda):
     augment_flag = bool(data_config.get('augment', True))
     sp_prob = float(data_config.get('sp_prob', 0.02))
     random_erasing_prob = float(data_config.get('random_erasing_prob', data_config.get('random_erasing_p', 0.5)))
-    perspective_p = float(data_config.get('perspective_p', data_config.get('perspective_p', 0.3)))
+    perspective_p = float(data_config.get('perspective_p', 0.3))
     perspective_distortion_scale = float(data_config.get('perspective_distortion_scale', 0.08))
     rotation_degrees = float(data_config.get('rotation_degrees', 0))
     brightness_jitter = float(data_config.get('brightness_jitter', 0.0))
