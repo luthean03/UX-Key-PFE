@@ -13,6 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
+__all__ = ["VAE"]
+
 
 class MaskedGroupNorm(nn.Module):
     def __init__(self, num_groups, num_channels, eps=1e-5):
@@ -92,10 +94,11 @@ class CBAM(nn.Module):
         # Channel Attention
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
+        reduced = max(1, channels // reduction)
         self.fc = nn.Sequential(
-            nn.Conv2d(channels, channels // reduction, 1, bias=False),
+            nn.Conv2d(channels, reduced, 1, bias=False),
             nn.ReLU(),
-            nn.Conv2d(channels // reduction, channels, 1, bias=False)
+            nn.Conv2d(reduced, channels, 1, bias=False)
         )
         self.sigmoid_channel = nn.Sigmoid()
         

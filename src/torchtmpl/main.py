@@ -361,7 +361,9 @@ def train(config):
 
         optim_conf = config.get("optimization", {})
         grad_accumulation_steps = int(optim_conf.get("accumulation_steps", int(config.get("grad_accumulation_steps", 64))))
+        grad_clip_max_norm = float(optim_conf.get("grad_clip_max_norm", 1.0))
         logging.info(f"Training with Gradient Accumulation Steps: {grad_accumulation_steps}")
+        logging.info(f"Gradient clipping max_norm: {grad_clip_max_norm}")
         
         # Setup mixed precision training if enabled
         use_amp = bool(optim_conf.get("mixed_precision", False)) and use_cuda
@@ -453,12 +455,12 @@ def train(config):
                 if (i + 1) % grad_accumulation_steps == 0:
                     if use_amp:
                         scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
                         scaler.step(optimizer)
                         scaler.update()
                         optimizer.zero_grad()
                     else:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
                         optimizer.step()
                         optimizer.zero_grad()
                     try:
@@ -476,12 +478,12 @@ def train(config):
             if (i + 1) % grad_accumulation_steps != 0:
                 if use_amp:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad()
                 else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
                     optimizer.step()
                     optimizer.zero_grad()
 
