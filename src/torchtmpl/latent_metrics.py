@@ -342,10 +342,11 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
 
         images_base64 = [tensor_to_base64(img) for img in train_images]
         # Use real filenames if provided, otherwise use Sample N
-        if train_image_names and len(train_image_names) == len(images_base64):
-            image_names = train_image_names
+        # Compare with len(train_images) not len(images_base64) because archetypes are added after
+        if train_image_names and len(train_image_names) == len(train_images):
+            image_names = train_image_names.copy()  # Create a copy to extend safely
         else:
-            image_names = [f"Sample {i}" for i in range(len(images_base64))]
+            image_names = [f"Sample {i}" for i in range(len(train_images))]
         
         # Add archetype images and names
         if archetype_images is not None and len(archetype_images) > 0:
