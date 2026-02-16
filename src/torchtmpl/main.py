@@ -160,7 +160,7 @@ def _resolve_config_paths(config: dict, base_dir: pathlib.Path) -> dict:
     """Convert relative paths in config to absolute paths."""
     data_cfg = config.get("data", {})
     
-    for key in ["data_dir", "archetypes_dir"]:
+    for key in ["data_dir", "archetypes_dir", "train_dir", "valid_dir"]:
         if key in data_cfg:
             path = data_cfg[key]
             if not os.path.isabs(path):
@@ -1346,4 +1346,13 @@ if __name__ == "__main__":
         config = yaml.safe_load(cf)
 
     command = sys.argv[2]
-    eval(f"{command}(config)")
+    _COMMANDS = {
+        "train": train,
+        "test": test,
+        "interpolate": interpolate,
+        "clustering": clustering,
+    }
+    if command not in _COMMANDS:
+        logging.error(f"Unknown command '{command}'. Choose from: {', '.join(_COMMANDS)}")
+        sys.exit(-1)
+    _COMMANDS[command](config)

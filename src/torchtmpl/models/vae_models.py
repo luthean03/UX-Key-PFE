@@ -291,6 +291,50 @@ class VAE(nn.Module):
         
         return recon
 
+    def _encode(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> tuple:
+        """Shared encoder pipeline for forward() and encode().
+
+        Args:
+            x: (B, 1, H, W) input images
+            mask: (B, 1, H, W) optional binary mask
+
+        Returns:
+            mu: (B, latent_dim)
+            logvar: (B, latent_dim)
+            z: (B, latent_dim) reparameterised sample
+        """
+        e1 = self.enc_conv1_conv(x)
+        e1 = self.enc_conv1_gn(e1, mask)
+        e1 = self.enc_conv1_relu(e1)
+        e1 = self.enc_conv1_pool(e1)
+
+        m1 = F.interpolate(mask, size=e1.shape[2:], mode='nearest') if mask is not None else None
+
+        e2 = self.enc_block1(e1, mask=m1)
+        del e1, m1
+
+        m2 = F.interpolate(mask, size=e2.shape[2:], mode='nearest') if mask is not None else None
+
+        e3 = self.enc_block2(e2, mask=m2)
+        del e2, m2
+
+        m3 = F.interpolate(mask, size=e3.shape[2:], mode='nearest') if mask is not None else None
+
+        features = self.enc_block3(e3, mask=m3)
+        del e3, m3
+
+        m_feat = F.interpolate(mask, size=features.shape[2:], mode='nearest') if mask is not None else None
+
+        pooled = self.spp(features, mask=m_feat)
+        del features, m_feat
+
+        mu = self.fc_mu(pooled)
+        logvar = self.fc_logvar(pooled)
+        z = self.reparameterize(mu, logvar)
+        del pooled
+
+        return mu, logvar, z
+
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         # Input validation
         assert x.dim() == 4, f"Expected 4D input (B,C,H,W), got {x.dim()}D shape {x.shape}"
@@ -303,62 +347,14 @@ class VAE(nn.Module):
         
         orig_h, orig_w = x.shape[2], x.shape[3]
         
-        # --- Encoder avec propagation du masque ---
-        
-        # enc_conv1 avec MaskedGroupNorm
-        e1 = self.enc_conv1_conv(x)
-        e1 = self.enc_conv1_gn(e1, mask)  # Masked GN
-        e1 = self.enc_conv1_relu(e1)
-        e1 = self.enc_conv1_pool(e1)
-        
-        # Maintenant on a un masque 1/2 taille (MaxPool stride 2)
-        if mask is not None:
-            m1 = F.interpolate(mask, size=e1.shape[2:], mode='nearest')
-        else:
-            m1 = None
-
-        # Blocs résiduels (qui acceptent le masque maintenant)
-        e2 = self.enc_block1(e1, mask=m1)
-        del e1, m1  # Libérer mémoire
-        
-        if mask is not None:
-             m2 = F.interpolate(mask, size=e2.shape[2:], mode='nearest')
-        else: m2 = None
-
-        e3 = self.enc_block2(e2, mask=m2)
-        del e2, m2  # Libérer mémoire
-        
-        if mask is not None:
-             m3 = F.interpolate(mask, size=e3.shape[2:], mode='nearest')
-        else: m3 = None
-
-        if self.use_skip_connections:
-            features = self.enc_block3(e3, mask=m3)
-        else:
-            features = self.enc_block3(e3, mask=m3)
-        
-        del e3, m3  # Libérer mémoire
-        
-        if mask is not None:
-            m_feat = F.interpolate(mask, size=features.shape[2:], mode='nearest')
-        else:
-            m_feat = None
-        
-        # Masked SPP
-        pooled = self.spp(features, mask=m_feat)
-        del features, m_feat  # Libérer mémoire
-        
-        mu, logvar = self.fc_mu(pooled), self.fc_logvar(pooled)
-        z = self.reparameterize(mu, logvar)
-        del pooled  # Libérer mémoire
+        mu, logvar, z = self._encode(x, mask)
 
         # Decode
         recon_small = self.decode(z)
         
         recon = F.interpolate(recon_small, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
-        del recon_small  # Libérer mémoire
+        del recon_small
         
-        # Appliquer le masque final sur la reconstruction pour nettoyer la sortie
         if mask is not None:
             recon = recon * mask
             
@@ -404,40 +400,4 @@ class VAE(nn.Module):
             logvar: (B, latent_dim) log-variance of latent distribution
             z: (B, latent_dim) sampled latent code
         """
-        # Encoder avec propagation du masque
-        e1 = self.enc_conv1_conv(x)
-        e1 = self.enc_conv1_gn(e1, mask)  # Masked GN
-        e1 = self.enc_conv1_relu(e1)
-        e1 = self.enc_conv1_pool(e1)
-        
-        if mask is not None:
-            m1 = F.interpolate(mask, size=e1.shape[2:], mode='nearest')
-        else:
-            m1 = None
-
-        e2 = self.enc_block1(e1, mask=m1)
-        if mask is not None:
-            m2 = F.interpolate(mask, size=e2.shape[2:], mode='nearest')
-        else:
-            m2 = None
-
-        e3 = self.enc_block2(e2, mask=m2)
-        if mask is not None:
-            m3 = F.interpolate(mask, size=e3.shape[2:], mode='nearest')
-        else:
-            m3 = None
-
-        features = self.enc_block3(e3, mask=m3)
-        
-        if mask is not None:
-            m_feat = F.interpolate(mask, size=features.shape[2:], mode='nearest')
-        else:
-            m_feat = None
-        
-        # Masked SPP
-        pooled = self.spp(features, mask=m_feat)
-        mu = self.fc_mu(pooled)
-        logvar = self.fc_logvar(pooled)
-        z = self.reparameterize(mu, logvar)
-        
-        return mu, logvar, z
+        return self._encode(x, mask)
