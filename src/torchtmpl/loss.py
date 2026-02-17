@@ -88,113 +88,208 @@ class SSIMLoss(nn.Module):
 
 # ===================== SIMPLE VAE LOSS =====================
 class SimpleVAELoss(nn.Module):
-    """Simple VAE loss using L1, MSE, or SSIM reconstruction + KLD.
+    """Simple VAE loss: L1 (or MSE) reconstruction + KL divergence.
 
-    Standard VAE ELBO loss: L = E[log p(x|z)] - beta * KL(q(z|x) || p(z))
-    
-    Normalisation strategies:
-    - recon_loss (L1/MSE): 
-        * 'sum': sum over ALL pixels → L1 ~50,000 (1M pixels, B=4)
-                 Use beta ~0.0001-0.001
-        
-        * 'batch_mean': sum per image, average over batch → L1 ~12,500 per image
-                        Use beta ~10-100 (RECOMMANDÉ pour interprétabilité)
-        
-        * 'mean': average over ALL pixels → L1 ~0.01-0.1 per pixel
-                  Use beta ~0.01-1
-    
-    - kld_loss: sum over latent dims, mean over batch (standard VAE)
-                Typ. ~50-200 pour latent_dim=128 au début, ~10-50 après convergence
-    
-    Recommendation: 'batch_mean' avec beta=10-100 donne le meilleur équilibre
-    et permet d'interpréter recon_loss comme "erreur L1 moyenne par image"
-    
+    ELBO = E_q[log p(x|z)] - KL(q(z|x) || p(z))
+
+    Both terms are normalised to be **per-dimension averages** so that
+    their magnitudes are inherently comparable regardless of image size
+    or latent dimensionality:
+
+        recon = (1/D) * Σ_d |x_d - x̂_d|       (D = C×H×W pixels)
+        kld   = (1/K) * Σ_k KLD_k              (K = latent_dim)
+
+    Both are then averaged over the batch.
+
+    Typical magnitudes (grayscale wireframes, latent_dim=64):
+        recon ≈ 0.02–0.10   (mean absolute error per pixel)
+        kld   ≈ 0.10–0.50   (mean KLD per latent dimension)
+
+    With beta=1 the two terms are already on the same scale.
+    Increase beta to encourage a more structured / disentangled latent space;
+    decrease it to prioritise pixel-perfect reconstruction.
+
     Args:
-        mode: 'l1', 'mse', or 'ssim'
-        beta: weight for KLD (depends on recon_reduction)
-        recon_reduction: 'sum', 'batch_mean', or 'mean'
-        scale: global scaling factor for display only
+        mode: 'l1' or 'mse'
+        beta: weight for KLD term (1.0 = balanced with per-dim normalisation)
     """
 
-    def __init__(self, mode='l1', beta=1.0, recon_reduction='batch_mean', scale=1.0):
+    def __init__(self, mode: str = 'l1', beta: float = 1.0):
         super().__init__()
         self.mode = mode
         self.beta = beta
-        self.recon_reduction = recon_reduction
-        self.scale = scale
-        
-        # Initialize SSIM loss module if needed
-        if mode == 'ssim':
-            self.ssim_loss = SSIMLoss()
 
     def forward(self, recon_x, x, mu, logvar, mask=None):
-        # Force FP32 for precision
         recon_x = recon_x.float()
         x = x.float()
-        
-        B, C, H, W = x.shape
-        num_pixels = B * C * H * W
-        
-        # Reconstruction loss with configurable reduction
-        if self.mode == 'ssim':
-            # SSIM loss returns (1 - SSIM) in [0, 1] range
-            ssim_loss_raw = self.ssim_loss(recon_x, x, mask)
-            if self.recon_reduction == 'mean':
-                recon_loss = ssim_loss_raw  # Already in [0,1]
-            elif self.recon_reduction == 'batch_mean':
-                recon_loss = ssim_loss_raw * (C * H * W)  # Scale to per-image magnitude
-            else:  # sum
-                recon_loss = ssim_loss_raw * num_pixels  # Scale to total magnitude
-        elif mask is not None:
+        mu = mu.float()
+        logvar = logvar.float()
+
+        B = x.shape[0]
+        K = mu.shape[1]  # latent_dim
+
+        # ---- Reconstruction loss: mean over pixels, mean over batch ----
+        if mask is not None:
             mask = mask.float()
             if self.mode == 'mse':
                 diff = ((recon_x - x) ** 2) * mask
             else:  # l1
                 diff = torch.abs(recon_x - x) * mask
-            
-            diff_sum = diff.sum()
-            if self.recon_reduction == 'mean':
-                # Mean over all pixels (all images)
-                num_valid = mask.sum() + 1e-8
-                recon_loss = diff_sum / num_valid
-            elif self.recon_reduction == 'batch_mean':
-                # Mean per image (average over batch)
-                recon_loss = diff_sum / B
-            else:  # sum
-                recon_loss = diff_sum
+            # Mean over valid pixels (avoids counting padding)
+            num_valid = mask.sum().clamp(min=1.0)
+            recon_loss = diff.sum() / num_valid
         else:
-            # Standard L1 or MSE
             if self.mode == 'mse':
-                if self.recon_reduction == 'batch_mean':
-                    # Sum over pixels, mean over batch
-                    recon_loss = F.mse_loss(recon_x, x, reduction='sum') / B
-                else:
-                    recon_loss = F.mse_loss(recon_x, x, reduction=self.recon_reduction)
+                recon_loss = F.mse_loss(recon_x, x, reduction='mean')
             elif self.mode == 'l1':
-                if self.recon_reduction == 'batch_mean':
-                    # Sum over pixels, mean over batch
-                    recon_loss = F.l1_loss(recon_x, x, reduction='sum') / B
-                else:
-                    recon_loss = F.l1_loss(recon_x, x, reduction=self.recon_reduction)
+                recon_loss = F.l1_loss(recon_x, x, reduction='mean')
             else:
-                raise ValueError(f"Unknown recon loss mode: {self.mode}. Use 'l1', 'mse', or 'ssim'.")
+                raise ValueError(f"Unknown mode: {self.mode}. Use 'l1' or 'mse'.")
 
-        # KL Divergence loss (standard VAE: sum over latent dims, mean over batch)
-        # Formula: -0.5 * sum_j(1 + logvar_j - mu_j^2 - exp(logvar_j))
-        mu = mu.float()
-        logvar = logvar.float()
-        
-        # KLD: sum over latent dimensions, mean over batch (consistent with recon batch averaging)
-        kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)  # (B,)
-        kld_loss = kld_per_sample.mean()  # Average over batch
-        
-        # Total loss
-        # With recon_reduction='batch_mean': L1 ~10,000, KLD ~10-50 → use beta~10-100
-        # With recon_reduction='mean': L1 ~0.01-0.1, KLD ~10-50 → use beta~0.01-1
-        # With recon_reduction='sum': L1 ~40,000, KLD ~10-50 → use beta~0.0001-0.001
+        # ---- KLD loss: mean over latent dims, mean over batch ----
+        # Standard formula: -0.5 * Σ_k (1 + logvar_k - mu_k² - exp(logvar_k))
+        kld_per_sample = -0.5 * torch.sum(
+            1 + logvar - mu.pow(2) - logvar.exp(), dim=1
+        )  # (B,)
+        # Average over latent dims AND batch → per-dim, per-sample average
+        kld_loss = kld_per_sample.mean() / K
+
+        # ---- Total ----
+        total = recon_loss + self.beta * kld_loss
+
+        return total, recon_loss, kld_loss
+
+
+# Gradient Loss Implementation
+class GradientLoss(nn.Module):
+    """Edge-preserving loss using Sobel gradients."""
+    
+    def __init__(self):
+        super().__init__()
+        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32)
+        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32)
+        self.register_buffer('sobel_x', sobel_x.view(1, 1, 3, 3))
+        self.register_buffer('sobel_y', sobel_y.view(1, 1, 3, 3))
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor,
+                mask: torch.Tensor = None) -> torch.Tensor:
+        pred_gx = F.conv2d(pred, self.sobel_x, padding=1)
+        pred_gy = F.conv2d(pred, self.sobel_y, padding=1)
+        pred_grad = torch.sqrt(pred_gx ** 2 + pred_gy ** 2 + 1e-8)
+        target_gx = F.conv2d(target, self.sobel_x, padding=1)
+        target_gy = F.conv2d(target, self.sobel_y, padding=1)
+        target_grad = torch.sqrt(target_gx ** 2 + target_gy ** 2 + 1e-8)
+        diff = torch.abs(pred_grad - target_grad)
+        if mask is not None:
+            return (diff * mask).sum()
+        return diff.sum()
+
+
+# Multi-Scale Loss Implementation
+class MultiScaleLoss(nn.Module):
+    """Multi-scale reconstruction loss."""
+    
+    def __init__(self, scales: list = [1.0, 0.5, 0.25], mode: str = 'l1'):
+        super().__init__()
+        self.scales = scales
+        self.mode = mode
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor,
+                mask: torch.Tensor = None) -> torch.Tensor:
+        total_loss = 0.0
+        for scale in self.scales:
+            if scale < 1.0:
+                size = (int(pred.shape[2] * scale), int(pred.shape[3] * scale))
+                pred_scaled = F.interpolate(pred, size=size, mode='bilinear', align_corners=False)
+                target_scaled = F.interpolate(target, size=size, mode='bilinear', align_corners=False)
+                mask_scaled = F.interpolate(mask, size=size, mode='nearest') if mask is not None else None
+            else:
+                pred_scaled = pred
+                target_scaled = target
+                mask_scaled = mask
+            if self.mode == 'l1':
+                diff = torch.abs(pred_scaled - target_scaled)
+            else:
+                diff = (pred_scaled - target_scaled) ** 2
+            if mask_scaled is not None:
+                loss = (diff * mask_scaled).sum()
+            else:
+                loss = diff.sum()
+            total_loss += loss * scale
+        return total_loss / sum(self.scales)
+
+
+# Perceptual VAE Loss Implementation
+class PerceptualVAELoss(nn.Module):
+    """Advanced VAE loss with perceptual components for structure preservation."""
+    
+    def __init__(self, beta: float = 1.0,
+                 lambda_l1: float = 1.0,
+                 lambda_ssim: float = 0.5,
+                 lambda_gradient: float = 0.1,
+                 lambda_multiscale: float = 0.2,
+                 use_multiscale: bool = True,
+                 scale: float = 1.0):
+        super().__init__()
+        self.beta = beta
+        self.lambda_l1 = lambda_l1
+        self.lambda_ssim = lambda_ssim
+        self.lambda_gradient = lambda_gradient
+        self.lambda_multiscale = lambda_multiscale
+        self.use_multiscale = use_multiscale
+        self.scale = scale
+        self.ssim_loss = SSIMLoss()
+        self.gradient_loss = GradientLoss()
+        if use_multiscale:
+            self.multiscale_loss = MultiScaleLoss(scales=[1.0, 0.5, 0.25])
+    
+    def forward(self, recon_x, x, mu, logvar, mask=None):
+        B = x.size(0)
+        if mask is not None:
+            l1_loss = (torch.abs(recon_x - x) * mask).sum()
+        else:
+            l1_loss = F.l1_loss(recon_x, x, reduction='sum')
+        ssim_loss = self.ssim_loss(recon_x, x, mask)
+        grad_loss = self.gradient_loss(recon_x, x, mask)
+        if self.use_multiscale:
+            ms_loss = self.multiscale_loss(recon_x, x, mask)
+        else:
+            ms_loss = 0.0
+        recon_loss = (self.lambda_l1 * l1_loss + 
+                      self.lambda_ssim * ssim_loss * l1_loss.detach() +
+                      self.lambda_gradient * grad_loss +
+                      self.lambda_multiscale * ms_loss)
+        kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+        kld_loss = kld_per_sample.mean()
         total = recon_loss + (self.beta * kld_loss)
-        
-        # Scale for display (does not change relative gradients)
         total_scaled = total * self.scale
-        
         return total_scaled, recon_loss, kld_loss
+
+
+# Factory function
+def get_vae_loss(loss_config: dict):
+    """Factory: instantiate a loss module from config.
+
+    Expected keys in loss_config:
+      - name: 'l1' | 'mse' | 'perceptual'
+      - beta_kld: float (weight for KL divergence)
+    """
+    name = loss_config.get('name', 'l1').lower()
+    beta = loss_config.get('beta_kld', loss_config.get('beta', 1.0))
+    
+    if name in ('l1', 'mse'):
+        return SimpleVAELoss(mode=name, beta=beta)
+    
+    if name == 'perceptual':
+        scale = float(loss_config.get('loss_scale', 1.0))
+        return PerceptualVAELoss(
+            beta=beta,
+            lambda_l1=loss_config.get('lambda_l1', 1.0),
+            lambda_ssim=loss_config.get('lambda_ssim', 0.5),
+            lambda_gradient=loss_config.get('lambda_gradient', 0.1),
+            lambda_multiscale=loss_config.get('lambda_multiscale', 0.2),
+            use_multiscale=loss_config.get('use_multiscale', True),
+            scale=scale
+        )
+    
+    raise ValueError(f"Unknown loss name: {name}. Use 'l1', 'mse', or 'perceptual'.")
