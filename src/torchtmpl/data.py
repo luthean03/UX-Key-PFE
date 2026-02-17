@@ -1,4 +1,5 @@
-# src/torchtmpl/data.py
+"""Dataset and data-loading utilities for variable-size wireframe images."""
+
 import torch
 from torch.utils.data import Dataset, DataLoader, Sampler
 from PIL import Image
@@ -14,28 +15,16 @@ Image.MAX_IMAGE_PIXELS = None
 
 
 class SmartBatchSampler(Sampler):
-    """Batches sorted by image height with noise to minimize padding while adding randomness.
-    
-    Groups similar-sized images together to reduce wasted GPU memory from padding,
-    while adding noise to prevent strict sorting bias. This is crucial for datasets
-    with highly variable image sizes (e.g., phone wireframes 1000-3000px).
-    
-    Example with batch_size=16:
-    - Without sorting: [1024, 1024, ..., 1024, 3000] → all padded to 3000
-    - With SmartBatching: [1024±100, 1024±100, ..., 3000±100, 3000±100]
-      → groups similar sizes, reduces padding by ~80-95%
-    """
+    """Group images by height (with noise) to minimise padding waste."""
     
     def __init__(self, dataset, batch_size: int, shuffle: bool = True):
         self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
         
-        # Scan image heights for intelligent batching
         self.heights = self._scan_heights()
-    
+
     def _scan_heights(self):
-        """Scan all images to get their heights (cached for efficiency)."""
         heights = []
         logging.info("Scanning dataset heights for SmartBatching (may take a few seconds)...")
         for filename in self.dataset.files:
@@ -55,21 +44,17 @@ class SmartBatchSampler(Sampler):
     
     def __iter__(self):
         indices = np.arange(len(self.dataset))
-        
+
         if self.shuffle:
-            # Add ±100px noise to heights to avoid strict sorting (which could bias learning)
-            # but keep similar sizes grouped together
             noisy_heights = np.array(self.heights) + np.random.uniform(-100, 100, size=len(indices))
             indices = indices[np.argsort(noisy_heights)]
         else:
-            # Pure sorting for reproducibility (validation)
             indices = indices[np.argsort(self.heights)]
         
         # Create batches from sorted indices
         batches = [indices[i:i + self.batch_size] for i in range(0, len(indices), self.batch_size)]
         
         if self.shuffle:
-            # Shuffle batch ORDER but keep batch content homogeneous in size
             np.random.shuffle(batches)
         
         for batch in batches:
@@ -104,11 +89,11 @@ class VariableSizeDataset(Dataset):
                 self.files = [f for f in os.listdir(root_dir) if f.lower().endswith('.png')]
 
         self.noise_level = float(noise_level)
-        self.max_height = int(max_height)  # Maximum allowed height (e.g., 2048 px)
+        self.max_height = int(max_height)
         self.augment = bool(augment)
         self.sp_prob = float(sp_prob)
 
-        # Read augmentation parameters (defaults kept for compatibility)
+        # Read augmentation parameters (defaults for backward compatibility)
         self.perspective_p = float(perspective_p)
         self.perspective_distortion_scale = float(perspective_distortion_scale)
         self.random_erasing_prob = float(random_erasing_prob)
@@ -116,21 +101,18 @@ class VariableSizeDataset(Dataset):
         self.brightness_jitter = float(brightness_jitter)
         self.contrast_jitter = float(contrast_jitter)
 
-        # "Web-Safe" augmentation pipeline (applied to PIL images)
         augment_transforms = []
         
-        # Light rotation (if enabled)
         if self.rotation_degrees > 0:
             augment_transforms.append(
-                T.RandomRotation(degrees=self.rotation_degrees, fill=1.0)  # fill=1 (blanc)
+                T.RandomRotation(degrees=self.rotation_degrees, fill=1.0)
             )
         
-        # Perspective
         augment_transforms.append(
             T.RandomPerspective(distortion_scale=self.perspective_distortion_scale, p=self.perspective_p)
         )
-        
-        # Jitter couleur (brightness + contrast)
+
+        # Brightness / contrast jitter
         if self.brightness_jitter > 0 or self.contrast_jitter > 0:
             augment_transforms.append(
                 T.ColorJitter(brightness=self.brightness_jitter, contrast=self.contrast_jitter)
@@ -156,7 +138,7 @@ class VariableSizeDataset(Dataset):
         except Exception as e:
             raise RuntimeError(f"Failed to load image {img_path}: {e}")
         
-        # Crop images taller than max_height to prevent OOM
+        # Crop to max_height if needed
         w, h = clean_image.size
         if h > self.max_height:
             # Random crop for training (regularization), center crop for validation (reproducibility)
@@ -166,7 +148,7 @@ class VariableSizeDataset(Dataset):
                 top = (h - self.max_height) // 2
             clean_image = clean_image.crop((0, top, w, top + self.max_height))
         
-        # Apply data augmentation (training only)
+        # Apply augmentation
         if self.augment and self.augment_transform is not None:
             try:
                 clean_image = self.augment_transform(clean_image)
@@ -175,7 +157,7 @@ class VariableSizeDataset(Dataset):
 
         clean_tensor = TF.to_tensor(clean_image)
 
-        # Add Gaussian noise for denoising task (training only)
+        # Add Gaussian noise
         if self.augment and self.noise_level > 0.0:
             noise = torch.randn_like(clean_tensor) * self.noise_level
             noisy_tensor = clean_tensor + noise
@@ -183,7 +165,7 @@ class VariableSizeDataset(Dataset):
         else:
             noisy_tensor = clean_tensor.clone()
 
-        # Apply random erasing to input for inpainting robustness (training only)
+        # Random erasing
         if self.augment and random.random() < self.random_erasing_prob:
             try:
                 eraser = T.RandomErasing(p=1.0, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0)
@@ -191,7 +173,7 @@ class VariableSizeDataset(Dataset):
             except Exception:
                 logging.debug("RandomErasing failed for %s", img_path)
 
-        # Apply salt-and-pepper noise (training only)
+        # Salt-and-pepper noise
         if self.augment and self.sp_prob > 0.0 and random.random() < 0.5:
             try:
                 mask = torch.rand_like(noisy_tensor) < self.sp_prob
@@ -205,11 +187,7 @@ class VariableSizeDataset(Dataset):
         return noisy_tensor, clean_tensor
 
 def padded_masked_collate(batch):
-    """Assemble variable-size images into a batch with padding and binary masks.
-    
-    Returns:
-        tuple: (padded_inputs, padded_targets, masks)
-    """
+    """Collate variable-size images into a padded batch with binary masks."""
     inputs = [item[0] for item in batch]
     targets = [item[1] for item in batch]
 
@@ -217,7 +195,7 @@ def padded_masked_collate(batch):
     max_h = max([img.shape[1] for img in inputs])
     max_w = max([img.shape[2] for img in inputs])
 
-    # Round up to multiple of 32 (required by VAE architecture)
+    # Pad to nearest multiple of 32 (required by VAE architecture)
     stride = 32
     max_h = ((max_h + stride - 1) // stride) * stride
     max_w = ((max_w + stride - 1) // stride) * stride
@@ -243,7 +221,6 @@ def padded_masked_collate(batch):
 
 def get_dataloaders(data_config, use_cuda):
     noise = float(data_config.get("noise_level", 0.0))
-    # Safety limit (2048 pixels height is sufficient to learn patterns)
     max_h = int(data_config.get("max_height", 2048))
     
     # Support both old (data_dir with split) and new (train_dir/valid_dir) formats
@@ -326,7 +303,6 @@ def get_dataloaders(data_config, use_cuda):
     )
 
     def _seed_worker(worker_id: int):
-        # Ensure python `random` is different per worker
         worker_seed = torch.initial_seed() % 2**32
         random.seed(worker_seed)
 
@@ -336,15 +312,12 @@ def get_dataloaders(data_config, use_cuda):
     g = torch.Generator()
     g.manual_seed(seed)
 
-    # Use SmartBatchSampler for training to minimize padding overhead
     train_sampler = SmartBatchSampler(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True  # Shuffle with noise to keep sizes grouped
+        shuffle=True
     )
-    
-    # For validation: use standard DataLoader (no SmartBatchSampler)
-    # This ensures consistent image ordering for reconstruction previews
+
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=train_sampler,
@@ -364,8 +337,7 @@ def get_dataloaders(data_config, use_cuda):
         collate_fn=padded_masked_collate,
     )
 
-    # Best-effort input shape (C, H, W) for model factory + torchinfo.
-    # Note: variable-size datasets won't have a single fixed shape.
+    # Best-effort input shape for model factory / torchinfo
     try:
         sample_x, _ = train_dataset[0]
         input_size = tuple(sample_x.shape)

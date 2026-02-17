@@ -1,10 +1,4 @@
-"""Latent space metrics for β-VAE evaluation.
-
-Provides tools to evaluate:
-1. Cluster quality (silhouette score, separation)
-2. Interpolation quality (smoothness, coherence)
-3. Latent space density (coverage, holes detection)
-"""
+"""Latent space evaluation metrics and visualisation utilities."""
 
 import numpy as np
 import torch
@@ -18,17 +12,9 @@ import logging
 
 def load_archetypes(archetypes_dir, model, device, max_height=2048):
     """Load and encode archetype wireframes.
-    
-    Args:
-        archetypes_dir: Path to archetypes_png folder
-        model: Trained VAE model
-        device: torch.device
-        max_height: Maximum image height
-    
+
     Returns:
-        latents: (N, latent_dim) encoded representations
-        labels: (N,) archetype labels (0, 1, ..., K-1)
-        label_names: List of archetype names
+        (latents, labels, label_names, images) or (None, None, None, None).
     """
     import torchvision.transforms as T
     
@@ -48,7 +34,7 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
     latents = []
     labels = []
     label_names = []
-    images = []  # Stocker aussi les images
+    images = []
     
     model.eval()
     with torch.inference_mode():
@@ -98,32 +84,21 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
     if len(latents) == 0:
         return None, None, None, None
     
-    latents = np.concatenate(latents, axis=0)  # (N, latent_dim)
-    labels = np.array(labels)  # (N,)
-    # Ne pas concat les images car elles ont des largeurs différentes
-    # Garder comme liste de tensors (1, 1, H, W)
-    
+    latents = np.concatenate(latents, axis=0)
+    labels = np.array(labels)
+
     logging.info(f"Loaded {len(latents)} archetypes: {', '.join(label_names)}")
     return latents, labels, label_names, images
 
 
 def compute_cluster_metrics(latents, labels):
-    """Compute cluster quality metrics.
-    
-    Args:
-        latents: (N, latent_dim) encoded representations
-        labels: (N,) ground-truth archetype labels
-    
-    Returns:
-        metrics: dict with silhouette_score, calinski_harabasz, etc.
-    """
+    """Compute cluster quality metrics (silhouette, Calinski-Harabasz, etc.)."""
     if latents is None or len(latents) < 2:
         return {}
     
     metrics = {}
     
-    # 1. Silhouette Score (−1 to 1, higher is better)
-    # Measures how similar an object is to its own cluster vs other clusters
+    # 1. Silhouette Score (-1 to 1, higher is better)
     n_clusters = len(np.unique(labels))
     if n_clusters > 1 and len(latents) > n_clusters:
         try:
@@ -133,8 +108,6 @@ def compute_cluster_metrics(latents, labels):
             logging.warning(f"Silhouette score failed: {e}")
     
     # 2. Calinski-Harabasz Index (higher is better)
-    # Ratio of between-cluster to within-cluster variance
-    # Requires: 2 <= n_clusters < n_samples
     if 2 <= n_clusters < len(latents):
         try:
             ch_score = calinski_harabasz_score(latents, labels)
@@ -145,7 +118,6 @@ def compute_cluster_metrics(latents, labels):
         logging.debug(f"Skipping Calinski-Harabasz: n_clusters ({n_clusters}) >= n_samples ({len(latents)})")
     
     # 3. Average pairwise cluster distance
-    # Measures separation between different archetypes
     try:
         unique_labels = np.unique(labels)
         centroids = []
@@ -164,7 +136,7 @@ def compute_cluster_metrics(latents, labels):
     except Exception as e:
         logging.warning(f"Cluster distance failed: {e}")
     
-    # 4. Intra-cluster variance (lower is better for tight clusters)
+    # 4. Intra-cluster variance (lower is better)
     try:
         total_variance = 0.0
         valid_clusters = 0
@@ -178,9 +150,7 @@ def compute_cluster_metrics(latents, labels):
         if valid_clusters > 0:
             metrics['mean_intra_cluster_variance'] = float(total_variance / valid_clusters)
         else:
-            # Tous les clusters ont 1 seul échantillon (variance=0)
             metrics['mean_intra_cluster_variance'] = 0.0
-            logging.debug(f"All clusters have single sample (variance=0)")
     except Exception as e:
         logging.warning(f"Intra-cluster variance failed: {e}")
     
@@ -188,15 +158,7 @@ def compute_cluster_metrics(latents, labels):
 
 
 def compute_latent_density_metrics(latents, n_neighbors=5):
-    """Compute latent space density and coverage.
-    
-    Args:
-        latents: (N, latent_dim) encoded representations
-        n_neighbors: Number of neighbors for density estimation
-    
-    Returns:
-        metrics: dict with density statistics
-    """
+    """Compute latent space density and coverage metrics."""
     if latents is None or len(latents) < n_neighbors:
         return {}
     
@@ -215,17 +177,16 @@ def compute_latent_density_metrics(latents, n_neighbors=5):
         metrics['mean_knn_distance'] = float(np.mean(distances))
         metrics['std_knn_distance'] = float(np.std(distances))
         
-        # 2. Coverage: percentage of latent space volume used
-        # Approximate by ratio of convex hull volume to hypercube volume
+        # 2. Coverage: approximate via convex hull volume
         from scipy.spatial import ConvexHull
-        if latents.shape[1] <= 10:  # Only for low-dimensional spaces
+        if latents.shape[1] <= 10:
             try:
                 hull = ConvexHull(latents)
                 metrics['convex_hull_volume'] = float(hull.volume)
             except Exception:
                 pass
         
-        # 3. Effective dimensionality (PCA explained variance)
+        # 3. Effective dimensionality (PCA)
         from sklearn.decomposition import PCA
         pca = PCA(n_components=min(10, latents.shape[1]))
         pca.fit(latents)
@@ -244,15 +205,7 @@ def compute_latent_density_metrics(latents, n_neighbors=5):
 def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype_embedded, archetype_names,
     archetype_cluster_labels, train_images, colors, k,
     viz_method, epoch, n_samples, latent_dim, output_path, train_image_names=None, archetype_images=None):
-    """Create interactive 3D visualization with Plotly and image thumbnails.
-
-    The visualization embeds thumbnail images as base64 data URIs for hover
-    and opens the full thumbnail in a new window when a point is clicked.
-    
-    Args:
-        train_image_names: Optional list of image names (filenames without extension)
-        archetype_images: Optional list of archetype image tuples (padded, mask, h, w)
-    """
+    """Create an interactive 3D Plotly scatter with embedded image thumbnails."""
     try:
         import plotly.graph_objects as go
         import base64
@@ -485,42 +438,30 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
 
 
 def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, writer, epoch, max_height=2048, max_samples=1000):
-    """Generate and log comprehensive latent space visualizations to TensorBoard.
-    
-    Args:
-        model: Trained VAE
-        valid_loader: DataLoader du dataset de validation
-        archetypes_dir: Path to archetypes (pour k-means avec k connu)
-        device: torch.device
-        writer: TensorBoard SummaryWriter
-        epoch: Current epoch number
-        max_height: Max image height
-        max_samples: Nombre max de samples du validation set à encoder
-    """
+    """Generate and log latent space visualisations to TensorBoard."""
     import matplotlib.pyplot as plt
     from sklearn.cluster import KMeans
     import base64
     from io import BytesIO
     
-    # 1. Encoder le dataset de validation complet
+    # 1. Encode the validation dataset
     logging.info(f"Encoding validation dataset (max {max_samples} samples)...")
     model.eval()
     valid_latents = []
     valid_indices = []
-    valid_images = []  # Store images for interactive visualization
-    
+    valid_images = []
+
     with torch.inference_mode():
         for i, (inputs, targets, masks) in enumerate(valid_loader):
             if i >= max_samples:
                 break
-            # Use targets (clean images) for latent space visualization
-            # We want to visualize the latent space of real data, not augmented/noisy versions
+            # Encode clean targets (not augmented/noisy versions)
             targets = targets.to(device)
             masks = masks.to(device)
             _, mu, _ = model(targets, mask=masks)
             valid_latents.append(mu.cpu().numpy())
             valid_indices.append(i)
-            # Store ALL images from batch for visualization
+            # Store all images from batch
             for j in range(targets.size(0)):
                 img_tensor = targets[j].cpu()  # (1, H, W)
                 valid_images.append(img_tensor)
@@ -529,10 +470,10 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
         logging.warning("No validation samples encoded, skipping visualization")
         return
     
-    valid_latents = np.concatenate(valid_latents, axis=0)  # (N, latent_dim)
-    latent_dim = valid_latents.shape[1]  # Get actual latent dimension from data
-    n_samples = len(valid_latents)  # Total number of samples (not batches!)
-    
+    valid_latents = np.concatenate(valid_latents, axis=0)
+    latent_dim = valid_latents.shape[1]
+    n_samples = len(valid_latents)
+
     logging.info(f"Encoded {n_samples} validation samples (latent_dim={latent_dim})")
     logging.info(f"Collected {len(valid_images)} images for visualization")
     
@@ -544,7 +485,7 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
         valid_images = valid_images[:min_len]
         n_samples = min_len
     
-    # 2. Charger archetypes pour déterminer k
+    # 2. Load archetypes to determine k
     archetype_latents, archetype_labels, archetype_names, archetype_images = load_archetypes(archetypes_dir, model, device, max_height)
     
     if archetype_latents is None:
@@ -604,7 +545,7 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
         # Also keep 2D for matplotlib
         z_pca_2d = z_pca_3d[:, :2]
         
-        # Calculer t-SNE seulement si assez de samples
+        # t-SNE only if enough samples
         if n_samples >= 50:
             # t-SNE 3D
             logging.info(f"Generating t-SNE 3D projection with perplexity={perplexity:.1f} (n_samples={n_samples})")
@@ -620,7 +561,7 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
             visualizations_2d = [("PCA", z_pca_2d, pca_3d)]
             visualizations_3d = [("PCA", z_pca_3d, pca_3d)]
         
-        # Générer une figure pour chaque visualisation
+        # Generate a figure for each visualisation
         colors = cm.tab20(np.linspace(0, 1, k))
         
         # Process both 2D and 3D visualizations
@@ -639,11 +580,11 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
             if archetype_latents is not None:
                 logging.info(f"Projecting archetypes to {viz_method} space...")
                 
-                # Projeter les archetypes sur le plan 2D et 3D
+                # Project archetypes
                 if projection_model_2d is not None:  # PCA
                     arch_embedded_2d = projection_model_2d.transform(archetype_latents)[:, :2]
                     arch_embedded_3d = projection_model_3d.transform(archetype_latents)
-                else:  # t-SNE - utiliser KNN pour approximation
+                else:  # t-SNE: use nearest-neighbour approximation
                     from sklearn.neighbors import NearestNeighbors
                     nbrs = NearestNeighbors(n_neighbors=1).fit(valid_latents)
                     _, indices = nbrs.kneighbors(archetype_latents)
@@ -653,11 +594,11 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
             # ===== Create Static 2D Matplotlib Visualization for TensorBoard =====
             fig, ax = plt.subplots(figsize=(14, 10))
             
-            # Colorier par cluster k-means (calculé sur l'espace latent complet)
+            # Colour by k-means cluster (computed on full latent space)
             for cluster_id in range(k):
                 mask = valid_cluster_labels_full == cluster_id
                 if np.sum(mask) > 0:
-                    # Nom du cluster (archetype correspondant si disponible)
+                    # Cluster label (use archetype name if available)
                     if archetype_latents is not None and cluster_id in cluster_to_archetypes_full:
                         archs = cluster_to_archetypes_full[cluster_id]
                         label = f"C{cluster_id}: {archs[0]}" if len(archs) == 1 else f"C{cluster_id}: {len(archs)} archs"
@@ -667,15 +608,14 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                     ax.scatter(z_embedded_2d[mask, 0], z_embedded_2d[mask, 1], 
                               c=[colors[cluster_id]], label=label, s=30, alpha=0.6, edgecolors='none')
             
-            # Superposer les archetypes (étoiles colorées par cluster)
+            # Overlay archetype markers (stars coloured by cluster)
             if archetype_latents is not None and arch_embedded_2d is not None:
-                # Colorier chaque archetype selon son cluster k-means (sur l'espace latent complet)
                 for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_assignments_full)):
                     ax.scatter(arch_embedded_2d[i, 0], arch_embedded_2d[i, 1], 
                               c=[colors[cluster_id]], marker='*', s=500, 
                               edgecolors='white', linewidths=2, zorder=10)
                     
-                    # Annoter l'archetype
+                    # Annotate
                     ax.annotate(name, (arch_embedded_2d[i, 0], arch_embedded_2d[i, 1]),
                                fontsize=8, ha='center', va='bottom', 
                                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))

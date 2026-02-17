@@ -1,9 +1,7 @@
-# coding: utf-8
+"""Model factory."""
 
-# External imports
 import torch
 
-# Local imports
 from .vae_models import *
 
 

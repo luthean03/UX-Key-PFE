@@ -1,6 +1,5 @@
-# coding: utf-8
+"""Optimizer and scheduler factory functions."""
 
-# External imports
 import torch
 import logging
 
@@ -10,33 +9,17 @@ def get_loss(lossname):
 
 
 def get_optimizer(cfg, parameters):
-    """
-    Create optimizer from `cfg` dict.
-
-    Expected cfg shape:
-    {
-       'algo': 'Adam',
-       'params': { 'lr': 1e-3, 'weight_decay': 0.0, ... }
-    }
-    """
+    """Create an optimizer from a config dict."""
     algo = cfg.get("algo", "Adam")
     params = dict(cfg.get("params", {}))
 
-    # Allow weight_decay to be specified (default 0.0)
-    # Torch will ignore unknown keys for the optimizer constructor, so pass params as-is
     OptimClass = getattr(torch.optim, algo)
     optimizer = OptimClass(parameters, **params)
     return optimizer
 
 
 def get_scheduler(optimizer, cfg: dict):
-    """Create LR scheduler from optimizer config.
-
-    Expected config shape:
-    {
-      'scheduler': { 'name': 'ReduceLROnPlateau', 'params': {...} }
-    }
-    """
+    """Create an LR scheduler from an optimizer config dict (returns None if absent)."""
 
     if not isinstance(cfg, dict) or "scheduler" not in cfg:
         return None
@@ -45,7 +28,7 @@ def get_scheduler(optimizer, cfg: dict):
     name = str(sched_config.get("name", "ReduceLROnPlateau"))
     params = dict(sched_config.get("params", {}) or {})
     
-    # Convert numeric strings to float (fix YAML parsing issues with scientific notation)
+    # Convert numeric strings to float (YAML parsing edge-case)
     for key in ['eta_min', 'min_lr', 'lr', 'T_0', 'T_mult']:
         if key in params and isinstance(params[key], str):
             try:
@@ -53,7 +36,7 @@ def get_scheduler(optimizer, cfg: dict):
             except ValueError:
                 pass
     
-    # Remove 'verbose' parameter for schedulers that don't support it
+    # Remove unsupported params for specific schedulers
     if name == "CosineAnnealingWarmRestarts" and "verbose" in params:
         params.pop("verbose")
     

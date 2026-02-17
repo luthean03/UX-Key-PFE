@@ -1,62 +1,46 @@
-# coding: utf-8
+"""General utilities: reproducibility, checkpointing, SLERP, train/test loops."""
 
-# Standard imports
 import os
 import random
 
-# External imports
 import numpy as np
 import torch
 import torch.nn
 import tqdm
 
 
-# Reproducibility utilities
 def set_reproducibility(seed: int) -> None:
-    """Set random seeds for reproducibility across numpy, torch, and CUDA.
-    
-    Args:
-        seed: Random seed value (typically from config)
-    """
+    """Set random seeds for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    # Prevent non-deterministic algorithms
+    # Enforce deterministic algorithms
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
 
-# SLERP (Spherical Linear Interpolation)
 def slerp_numpy(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
-    """Spherical Linear Interpolation (SLERP) between two latent codes (numpy).
-    
-    SLERP preserves the norm of latent vectors, providing smoother
-    interpolations than linear interpolation.
-    
-    Args:
-        z1: (latent_dim,) first latent code
-        z2: (latent_dim,) second latent code  
-        alpha: interpolation factor in [0, 1]
-        
-    Returns:
-        z_interp: interpolated latent code with interpolated magnitude
+    """Spherical linear interpolation between two latent codes.
+
+    Preserves the norm of latent vectors for smoother interpolation
+    than linear lerp.
     """
-    # Normalize to unit vectors
+    # Normalise to unit vectors
     z1_norm = z1 / (np.linalg.norm(z1) + 1e-8)
     z2_norm = z2 / (np.linalg.norm(z2) + 1e-8)
     
-    # Compute angle between vectors
+    # Compute angle
     dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
     omega = np.arccos(dot)
     sin_omega = np.sin(omega)
     
-    # Handle nearly parallel vectors (use lerp instead)
+    # Nearly parallel: fall back to lerp
     if np.abs(sin_omega) < 1e-6:
         return (1 - alpha) * z1 + alpha * z2
     
-    # Scale back to interpolated magnitude
+    # Interpolate and rescale
     scale1 = np.linalg.norm(z1)
     scale2 = np.linalg.norm(z2)
     scale = (1 - alpha) * scale1 + alpha * scale2
@@ -68,15 +52,7 @@ def slerp_numpy(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
 
 
 def generate_unique_logpath(logdir, raw_run_name):
-    """
-    Generate a unique directory name
-    Argument:
-        logdir: the prefix directory
-        raw_run_name(str): the base name
-    Returns:
-        log_path: a non-existent path like logdir/raw_run_name_xxxx
-                  where xxxx is an int
-    """
+    """Return a non-existent path ``logdir/raw_run_name_N``."""
     i = 0
     while True:
         run_name = raw_run_name + "_" + str(i)
@@ -86,10 +62,8 @@ def generate_unique_logpath(logdir, raw_run_name):
         i = i + 1
 
 
-class ModelCheckpoint(object):
-    """
-    Early stopping callback
-    """
+class ModelCheckpoint:
+    """Save model weights when a new best score is achieved."""
 
     def __init__(
         self,
@@ -120,43 +94,23 @@ class ModelCheckpoint(object):
 
 
 def train(model, loader, f_loss, optimizer, device, dynamic_display=True):
-    """
-    Train a model for one epoch, iterating over the loader
-    using the f_loss to compute the loss and the optimizer
-    to update the parameters of the model.
-    Arguments :
-    model     -- A torch.nn.Module object
-    loader    -- A torch.utils.data.DataLoader
-    f_loss    -- The loss function, i.e. a loss Module
-    optimizer -- A torch.optim.Optimzer object
-    device    -- A torch.device
-    Returns :
-    The averaged train metrics computed over a sliding window
-    """
+    """Train a model for one epoch and return the average loss."""
 
-    # We enter train mode.
-    # This is important for layers such as dropout, batchnorm, ...
     model.train()
 
     total_loss = 0
     num_samples = 0
     for i, batch in (pbar := tqdm.tqdm(enumerate(loader))):
-        # Support both (inputs, targets) and (inputs, targets, masks) from collate
         inputs, targets = batch[0], batch[1]
         inputs, targets = inputs.to(device), targets.to(device)
 
-        # Compute the forward propagation
         outputs = model(inputs)
-
         loss = f_loss(outputs, targets)
 
-        # Backward and optimize
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        # Update the metrics
-        # We here consider the loss is batch normalized
         total_loss += inputs.shape[0] * loss.item()
         num_samples += inputs.shape[0]
         pbar.set_description(f"Train loss : {total_loss/num_samples:.2f}")
@@ -165,35 +119,19 @@ def train(model, loader, f_loss, optimizer, device, dynamic_display=True):
 
 
 def test(model, loader, f_loss, device):
-    """
-    Test a model over the loader
-    using the f_loss as metrics
-    Arguments :
-    model     -- A torch.nn.Module object
-    loader    -- A torch.utils.data.DataLoader
-    f_loss    -- The loss function, i.e. a loss Module
-    device    -- A torch.device
-    Returns :
-    """
+    """Evaluate a model on the given loader and return the average loss."""
 
-    # We enter eval mode.
-    # This is important for layers such as dropout, batchnorm, ...
     model.eval()
 
     total_loss = 0
     num_samples = 0
     for batch in loader:
-        # Support both (inputs, targets) and (inputs, targets, masks) from collate
         inputs, targets = batch[0], batch[1]
         inputs, targets = inputs.to(device), targets.to(device)
 
-        # Compute the forward propagation
         outputs = model(inputs)
-
         loss = f_loss(outputs, targets)
 
-        # Update the metrics
-        # We here consider the loss is batch normalized
         total_loss += inputs.shape[0] * loss.item()
         num_samples += inputs.shape[0]
 

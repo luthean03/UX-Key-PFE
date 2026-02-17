@@ -1,9 +1,14 @@
+"""Loss functions for VAE training.
+
+Provides SimpleVAELoss (L1/MSE + KLD) and PerceptualVAELoss
+(L1 + SSIM + gradient + multi-scale + KLD), plus a factory function.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-# SSIM Loss Implementation
 def gaussian_kernel(size: int, sigma: float, device: torch.device) -> torch.Tensor:
     """Create a 2D Gaussian kernel."""
     coords = torch.arange(size, dtype=torch.float32, device=device)
@@ -14,13 +19,7 @@ def gaussian_kernel(size: int, sigma: float, device: torch.device) -> torch.Tens
 
 
 class SSIMLoss(nn.Module):
-    """Structural Similarity Index Loss for preserving structure.
-    
-    SSIM is ideal for wireframes because it focuses on:
-    - Luminance (mean pixel intensity)
-    - Contrast (standard deviation)
-    - Structure (correlation between patterns)
-    """
+    """Structural Similarity Index loss (1 - SSIM)."""
     
     def __init__(self, window_size: int = 11, sigma: float = 1.5, 
                  data_range: float = 1.0, size_average: bool = True):
@@ -32,11 +31,9 @@ class SSIMLoss(nn.Module):
         self.C1 = (0.01 * data_range) ** 2
         self.C2 = (0.03 * data_range) ** 2
         
-        # Pre-compute Gaussian window
         self.register_buffer('window', None)
-    
+
     def _get_window(self, channels: int, device: torch.device) -> torch.Tensor:
-        """Get or create Gaussian window for given channels."""
         if self.window is None or self.window.device != device:
             kernel = gaussian_kernel(self.window_size, self.sigma, device)
             window = kernel.unsqueeze(0).unsqueeze(0)
@@ -44,74 +41,46 @@ class SSIMLoss(nn.Module):
             self.window = window
         return self.window
     
-    def forward(self, pred: torch.Tensor, target: torch.Tensor, 
+    def forward(self, pred: torch.Tensor, target: torch.Tensor,
                 mask: torch.Tensor = None) -> torch.Tensor:
-        """Compute SSIM loss (1 - SSIM)."""
         channels = pred.shape[1]
         window = self._get_window(channels, pred.device)
-        
-        # Apply mask if provided
+
         if mask is not None:
             pred = pred * mask
             target = target * mask
         
-        # Compute local means
-        mu1 = F.conv2d(pred, window, padding=self.window_size // 2, groups=channels)
-        mu2 = F.conv2d(target, window, padding=self.window_size // 2, groups=channels)
-        
-        mu1_sq = mu1 ** 2
-        mu2_sq = mu2 ** 2
-        mu1_mu2 = mu1 * mu2
-        
-        # Compute local variances and covariance
-        sigma1_sq = F.conv2d(pred * pred, window, padding=self.window_size // 2, groups=channels) - mu1_sq
-        sigma2_sq = F.conv2d(target * target, window, padding=self.window_size // 2, groups=channels) - mu2_sq
-        sigma12 = F.conv2d(pred * target, window, padding=self.window_size // 2, groups=channels) - mu1_mu2
-        
-        # SSIM formula
+        pad = self.window_size // 2
+        mu1 = F.conv2d(pred, window, padding=pad, groups=channels)
+        mu2 = F.conv2d(target, window, padding=pad, groups=channels)
+
+        mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
+
+        sigma1_sq = F.conv2d(pred * pred, window, padding=pad, groups=channels) - mu1_sq
+        sigma2_sq = F.conv2d(target * target, window, padding=pad, groups=channels) - mu2_sq
+        sigma12 = F.conv2d(pred * target, window, padding=pad, groups=channels) - mu1_mu2
+
         ssim_map = ((2 * mu1_mu2 + self.C1) * (2 * sigma12 + self.C2)) / \
                    ((mu1_sq + mu2_sq + self.C1) * (sigma1_sq + sigma2_sq + self.C2))
-        
-        # Apply mask to SSIM map
+
         if mask is not None:
             mask_small = F.interpolate(mask, size=ssim_map.shape[2:], mode='nearest')
             ssim_map = ssim_map * mask_small
-            # Mean over valid pixels only
-            loss = 1 - ssim_map.sum() / (mask_small.sum() + 1e-8)
-        elif self.size_average:
-            loss = 1 - ssim_map.mean()
-        else:
-            loss = 1 - ssim_map.sum()
-        
-        return loss
+            return 1 - ssim_map.sum() / (mask_small.sum() + 1e-8)
+        if self.size_average:
+            return 1 - ssim_map.mean()
+        return 1 - ssim_map.sum()
 
 
-# ===================== SIMPLE VAE LOSS =====================
 class SimpleVAELoss(nn.Module):
-    """Simple VAE loss: L1 (or MSE) reconstruction + KL divergence.
+    """VAE ELBO loss: pixel reconstruction + KL divergence.
 
-    ELBO = E_q[log p(x|z)] - KL(q(z|x) || p(z))
-
-    Both terms are normalised to be **per-dimension averages** so that
-    their magnitudes are inherently comparable regardless of image size
-    or latent dimensionality:
-
-        recon = (1/D) * Σ_d |x_d - x̂_d|       (D = C×H×W pixels)
-        kld   = (1/K) * Σ_k KLD_k              (K = latent_dim)
-
-    Both are then averaged over the batch.
-
-    Typical magnitudes (grayscale wireframes, latent_dim=64):
-        recon ≈ 0.02–0.10   (mean absolute error per pixel)
-        kld   ≈ 0.10–0.50   (mean KLD per latent dimension)
-
-    With beta=1 the two terms are already on the same scale.
-    Increase beta to encourage a more structured / disentangled latent space;
-    decrease it to prioritise pixel-perfect reconstruction.
+    Both terms are normalised to per-dimension averages so that their
+    magnitudes are comparable regardless of image size or latent dim.
 
     Args:
-        mode: 'l1' or 'mse'
-        beta: weight for KLD term (1.0 = balanced with per-dim normalisation)
+        mode: ``'l1'`` or ``'mse'``.
+        beta: Weight for the KLD term.
     """
 
     def __init__(self, mode: str = 'l1', beta: float = 1.0):
@@ -125,17 +94,15 @@ class SimpleVAELoss(nn.Module):
         mu = mu.float()
         logvar = logvar.float()
 
-        B = x.shape[0]
-        K = mu.shape[1]  # latent_dim
+        K = mu.shape[1]
 
-        # ---- Reconstruction loss: mean over pixels, mean over batch ----
+        # Reconstruction: mean over pixels, mean over batch
         if mask is not None:
             mask = mask.float()
             if self.mode == 'mse':
                 diff = ((recon_x - x) ** 2) * mask
-            else:  # l1
+            else:
                 diff = torch.abs(recon_x - x) * mask
-            # Mean over valid pixels (avoids counting padding)
             num_valid = mask.sum().clamp(min=1.0)
             recon_loss = diff.sum() / num_valid
         else:
@@ -146,21 +113,17 @@ class SimpleVAELoss(nn.Module):
             else:
                 raise ValueError(f"Unknown mode: {self.mode}. Use 'l1' or 'mse'.")
 
-        # ---- KLD loss: mean over latent dims, mean over batch ----
-        # Standard formula: -0.5 * Σ_k (1 + logvar_k - mu_k² - exp(logvar_k))
+        # KLD: mean over latent dims, mean over batch
         kld_per_sample = -0.5 * torch.sum(
             1 + logvar - mu.pow(2) - logvar.exp(), dim=1
-        )  # (B,)
-        # Average over latent dims AND batch → per-dim, per-sample average
+        )
         kld_loss = kld_per_sample.mean() / K
 
-        # ---- Total ----
         total = recon_loss + self.beta * kld_loss
 
         return total, recon_loss, kld_loss
 
 
-# Gradient Loss Implementation
 class GradientLoss(nn.Module):
     """Edge-preserving loss using Sobel gradients."""
     
@@ -185,7 +148,6 @@ class GradientLoss(nn.Module):
         return diff.sum()
 
 
-# Multi-Scale Loss Implementation
 class MultiScaleLoss(nn.Module):
     """Multi-scale reconstruction loss."""
     
@@ -219,9 +181,8 @@ class MultiScaleLoss(nn.Module):
         return total_loss / sum(self.scales)
 
 
-# Perceptual VAE Loss Implementation
 class PerceptualVAELoss(nn.Module):
-    """Advanced VAE loss with perceptual components for structure preservation."""
+    """VAE loss combining L1 + SSIM + gradient + multi-scale + KLD."""
     
     def __init__(self, beta: float = 1.0,
                  lambda_l1: float = 1.0,
@@ -244,35 +205,30 @@ class PerceptualVAELoss(nn.Module):
             self.multiscale_loss = MultiScaleLoss(scales=[1.0, 0.5, 0.25])
     
     def forward(self, recon_x, x, mu, logvar, mask=None):
-        B = x.size(0)
         if mask is not None:
             l1_loss = (torch.abs(recon_x - x) * mask).sum()
         else:
             l1_loss = F.l1_loss(recon_x, x, reduction='sum')
-        ssim_loss = self.ssim_loss(recon_x, x, mask)
-        grad_loss = self.gradient_loss(recon_x, x, mask)
-        if self.use_multiscale:
-            ms_loss = self.multiscale_loss(recon_x, x, mask)
-        else:
-            ms_loss = 0.0
-        recon_loss = (self.lambda_l1 * l1_loss + 
-                      self.lambda_ssim * ssim_loss * l1_loss.detach() +
-                      self.lambda_gradient * grad_loss +
-                      self.lambda_multiscale * ms_loss)
+        ssim_val = self.ssim_loss(recon_x, x, mask)
+        grad_val = self.gradient_loss(recon_x, x, mask)
+        ms_val = self.multiscale_loss(recon_x, x, mask) if self.use_multiscale else 0.0
+
+        recon_loss = (self.lambda_l1 * l1_loss
+                      + self.lambda_ssim * ssim_val * l1_loss.detach()
+                      + self.lambda_gradient * grad_val
+                      + self.lambda_multiscale * ms_val)
         kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
         kld_loss = kld_per_sample.mean()
-        total = recon_loss + (self.beta * kld_loss)
-        total_scaled = total * self.scale
-        return total_scaled, recon_loss, kld_loss
+        total = (recon_loss + self.beta * kld_loss) * self.scale
+        return total, recon_loss, kld_loss
 
 
-# Factory function
-def get_vae_loss(loss_config: dict):
-    """Factory: instantiate a loss module from config.
+def get_vae_loss(loss_config: dict) -> nn.Module:
+    """Instantiate a VAE loss module from a config dict.
 
-    Expected keys in loss_config:
-      - name: 'l1' | 'mse' | 'perceptual'
-      - beta_kld: float (weight for KL divergence)
+    Recognised keys:
+        name: ``'l1'`` | ``'mse'`` | ``'perceptual'``
+        beta_kld: float -- weight for the KL divergence term.
     """
     name = loss_config.get('name', 'l1').lower()
     beta = loss_config.get('beta_kld', loss_config.get('beta', 1.0))

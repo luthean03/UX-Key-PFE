@@ -1,9 +1,7 @@
-# coding: utf-8
+"""Quick smoke-tests for model building."""
 
-# External imports
 import torch
 
-# Local imports
 from . import build_model
 
 

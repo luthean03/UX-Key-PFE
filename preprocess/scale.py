@@ -1,23 +1,25 @@
+"""Batch-scale PNG images using multi-threaded processing."""
+
 import os
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 def scale_image(image_path, output_dir, scale_factor):
+    """Resize a single image and save to output_dir."""
     try:
         filename = os.path.basename(image_path)
         output_path = os.path.join(output_dir, filename)
-        
+
         with Image.open(image_path) as img:
             new_size = (int(img.width * scale_factor), int(img.height * scale_factor))
             img_resized = img.resize(new_size, resample=Image.LANCZOS)
-            # Save to new output directory
             img_resized.save(output_path, format="PNG")
     except Exception:
-        pass  # (optional: log errors)
+        pass
 
 def batch_scale_images(image_dir, output_dir, scale_factor=0.5, max_workers=12):
-    # Create the output directory if it doesn't exist
+    """Scale all PNGs in image_dir and write results to output_dir."""
     os.makedirs(output_dir, exist_ok=True)
 
     # Only PNG images in the directory

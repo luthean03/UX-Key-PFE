@@ -1,3 +1,5 @@
+"""Convert JSON wireframe descriptions to PNG heatmap images."""
+
 import json
 import os
 import numpy as np
@@ -6,7 +8,6 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
-# Configuration
 INPUT_FOLDER = "./dataset/vae_dataset/json"
 
 OUTPUT_FOLDER = "dataset/vae_dataset/png"
@@ -161,23 +162,18 @@ def process_file(file_path, output_dir):
         normalized_img = cropped_heatmap / local_max
         final_img_uint8 = (normalized_img * 255.0).astype(np.uint8)
 
-        # === NEW FILENAME LOGIC ===
-        # Check if '-None' is already present (case-insensitive)
+        # Append '-None' suffix for purely numeric filenames (no letters)
         name_lower = name_without_ext.lower()
         has_none_suffix = '-none' in name_lower
-        
-        # Check if filename contains NO letters (only digits and special chars like -, _)
         has_no_letters = not any(c.isalpha() for c in name_without_ext)
-        
-        # Add '-None' only if: does NOT have '-None' AND has NO letters
+
         if not has_none_suffix and has_no_letters:
             suffix = "-None"
         else:
             suffix = ""
-        
+
         final_filename = f"{name_without_ext}{suffix}.png"
         output_path = os.path.join(output_dir, final_filename)
-        # ==========================
 
         Image.fromarray(final_img_uint8, mode='L').save(output_path)
         

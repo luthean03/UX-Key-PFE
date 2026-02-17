@@ -1,12 +1,5 @@
-"""Training entrypoint for torchtmpl.
+"""Training entrypoint for torchtmpl."""
 
-Contains VAE training (with gradient accumulation, KL annealing, SSIM monitoring)
-and classic model training.
-"""
-
-# coding: utf-8
-
-# Standard imports
 import logging
 import os
 import pathlib
@@ -15,7 +8,6 @@ import sys
 # Set PyTorch memory allocator configuration for better memory management
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
-# External imports
 import yaml
 import torch
 try:
@@ -29,7 +21,6 @@ from torchmetrics.image import StructuralSimilarityIndexMeasure
 from PIL import Image
 import torchvision.transforms.functional as TF
 
-# Optional visualization dependencies (imported lazily)
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -39,18 +30,11 @@ except Exception:
     TSNE = None
 
 
-# ==================== MIXUP / CUTMIX ====================
 def mixup_data(x, y, alpha=0.2, mask=None):
     """Apply Mixup augmentation.
-    
-    Args:
-        x: Input images (batch)
-        y: Target images (batch)
-        alpha: Mixup parameter (higher = more mixing)
-        mask: Optional mask tensor (batch)
-    
+
     Returns:
-        Mixed inputs, mixed targets, (mixed_mask if mask provided), lambda coefficient
+        Mixed inputs, mixed targets, (mixed_mask if mask given), lambda.
     """
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
@@ -72,15 +56,9 @@ def mixup_data(x, y, alpha=0.2, mask=None):
 
 def cutmix_data(x, y, alpha=1.0, mask=None):
     """Apply CutMix augmentation.
-    
-    Args:
-        x: Input images (batch)
-        y: Target images (batch)
-        alpha: CutMix parameter
-        mask: Optional mask tensor
-    
+
     Returns:
-        CutMix inputs, CutMix targets, (mixed_mask), lambda coefficient
+        CutMix inputs, CutMix targets, (mixed_mask if mask given), lambda.
     """
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
@@ -111,7 +89,7 @@ def cutmix_data(x, y, alpha=1.0, mask=None):
     y_cutmix = y.clone()
     y_cutmix[:, :, bby1:bby2, bbx1:bbx2] = y[index, :, bby1:bby2, bbx1:bbx2]
     
-    # Adjust lambda to reflect actual area ratio
+    # Adjust lambda to match actual replaced area
     lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (W * H))
 
     if mask is not None:
@@ -121,7 +99,6 @@ def cutmix_data(x, y, alpha=1.0, mask=None):
     
     return x_cutmix, y_cutmix, lam
 
-# Local imports
 from . import data
 from . import loss as loss_module
 from . import models
@@ -193,7 +170,7 @@ def _avg_ssim_on_loader(model, loader, device):
     model.eval()
     with torch.no_grad():
         for batch in loader:
-            # Support both (inputs, targets) and (inputs, targets, masks) from collate
+            # Support (inputs, targets) and (inputs, targets, masks)
             inputs, targets = batch[0].to(device), batch[1].to(device)
             out = model(inputs)
             recon = out[0] if isinstance(out, (tuple, list)) else out
@@ -354,10 +331,10 @@ def train(config):
         target_beta = float(loss_config.get("beta_kld", 0.001))
         warmup_epochs = int(loss_config.get("warmup_epochs", 20))
         
-        # Nom de la loss de reconstruction (pour logging)
+        # Reconstruction loss name for logging
         recon_loss_name = loss_config.get("name", "l1").lower()
         if recon_loss_name not in ["l1", "mse"]:
-            recon_loss_name = "recon"  # Fallback générique
+            recon_loss_name = "recon"
 
         optim_conf = config.get("optimization", {})
         grad_accumulation_steps = int(optim_conf.get("accumulation_steps", int(config.get("grad_accumulation_steps", 64))))
@@ -413,7 +390,7 @@ def train(config):
             model.train()
             train_total = 0.0
             train_samples = 0
-            # Accumulateurs pour composantes de loss (recon + KLD)
+            # Loss component accumulators
             train_recon_total = 0.0
             train_kld_total = 0.0
             
@@ -440,12 +417,12 @@ def train(config):
                     recon, mu, logvar = model(inputs, mask=masks)
                     loss_result = criterion(recon, targets, mu, logvar, mask=masks)
                 
-                # SimpleVAELoss retourne toujours 3 valeurs: (total, recon, kld)
+                # Unpack loss components
                 total_loss, recon_loss, kld_loss = loss_result
                 train_recon_total += recon_loss.detach().item()
                 train_kld_total += kld_loss.detach().item()
                 
-                # Backward pass avec gradient accumulation
+                # Backward with gradient accumulation
                 loss_for_backward = total_loss / grad_accumulation_steps
                 if use_amp:
                     scaler.scale(loss_for_backward).backward()
@@ -472,7 +449,7 @@ def train(config):
                 train_total += total_loss.detach().item()
                 train_samples += bs
                 
-                # Libérer mémoire explicitement
+                # Free memory
                 del total_loss, recon_loss, kld_loss, loss_for_backward, recon, mu, logvar, inputs, targets, masks
 
             if (i + 1) % grad_accumulation_steps != 0:
@@ -493,7 +470,7 @@ def train(config):
             model.eval()
             val_total = 0.0
             val_samples = 0
-            # Accumulateurs validation (recon + KLD)
+            # Validation loss component accumulators
             val_recon_total = 0.0
             val_kld_total = 0.0
             
@@ -503,11 +480,10 @@ def train(config):
                 for inputs, targets, masks in valid_loader:
                     inputs, targets = inputs.to(device), targets.to(device)
                     masks = masks.to(device)
-                    # Use targets (clean images) for validation reconstruction
-                    # to match test() behavior - we're not doing denoising in validation
+                    # Use clean targets for validation (not augmented/noisy inputs)
                     recon, mu, logvar = model(targets, mask=masks)
                     
-                    # SimpleVAELoss retourne (total, recon, kld)
+                    # Unpack loss components
                     total_loss, recon_loss, kld_loss = criterion(recon, targets, mu, logvar, mask=masks)
                     val_recon_total += recon_loss.item()
                     val_kld_total += kld_loss.item()
@@ -564,12 +540,11 @@ def train(config):
                     sample_inputs, sample_targets = sample_inputs.to(device), sample_targets.to(device)
                     sample_masks = sample_masks.to(device)
                     
-                    # IMPORTANT: Use sample_targets (clean images) for reconstruction preview
-                    # to match the behavior of test() function which uses clean images
+                    # Use clean targets for reconstruction preview (match test() behaviour)
                     sample_recon, _, _ = model(sample_targets, mask=sample_masks)
                     
-                    sample_recon = sample_recon * sample_masks  # Zeros on padding
-                    sample_targets = sample_targets * sample_masks  # Consistency
+                    sample_recon = sample_recon * sample_masks
+                    sample_targets = sample_targets * sample_masks
                     
                     # Select first image in batch and crop to valid mask area
                     idx = 0
@@ -601,7 +576,7 @@ def train(config):
             except Exception:
                 logging.debug("Could not save reconstruction image for epoch %d", e)
 
-            # Log des composantes (recon + KLD)
+            # Log loss components
             train_recon_avg = train_recon_total / max(1, train_samples)
             train_kld_avg = train_kld_total / max(1, train_samples)
             val_recon_avg = val_recon_total / max(1, val_samples)
@@ -627,7 +602,7 @@ def train(config):
                 except Exception:
                     pass
                 
-                # Log composantes (recon + KLD avec noms dynamiques)
+                # Log loss components with dynamic names
                 try:
                     writer.add_scalar(f"train/{recon_loss_name}_loss", train_recon_avg, e)
                     writer.add_scalar("train/kld_loss", train_kld_avg, e)
@@ -655,7 +630,7 @@ def train(config):
                     logging.warning(f"Latent metrics failed: {ex}")
 
     else:
-        # Cas des modèles classiques (CNN, ResNet, etc.)
+        # Standard model training (CNN, ResNet, etc.)
         for e in range(config["nepochs"]):
             train_loss = utils.train(model, train_loader, loss, optimizer, device)
             test_loss = utils.test(model, valid_loader, loss, device)
@@ -724,23 +699,7 @@ def train(config):
 
 
 def test(config):
-    """Test function: Encode/decode images and create comparison grids.
-    
-    Loads images from test_input_dir specified in config,
-    encodes/decodes them with the VAE, and saves side-by-side
-    comparison images (original + reconstruction) to test_output_dir.
-    
-    Expected config structure:
-    {
-        'test': {
-            'test_input_dir': '/path/to/input/images',
-            'test_output_dir': '/path/to/output/images',
-            'model_path': '/path/to/checkpoint.pt'
-        },
-        'model': {...},
-        'data': {...}
-    }
-    """
+    """Encode/decode test images and save side-by-side comparison grids."""
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda") if use_cuda else torch.device("cpu")
     logging.info(f"Using device: {device}")
@@ -770,12 +729,11 @@ def test(config):
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
     
     checkpoint = torch.load(model_path, map_location=device)
-    # Use strict=False to support loading old checkpoints with deprecated 'encoder' attribute
+    # Use strict=False to handle checkpoints from older model versions
     model.load_state_dict(checkpoint, strict=False)
     logging.info(f"Loaded model from: {model_path}")
     model.eval()
     
-    # Find all images in input directory
     input_path = pathlib.Path(test_input_dir)
     if not input_path.exists():
         raise FileNotFoundError(f"Input directory not found: {test_input_dir}")
@@ -850,22 +808,7 @@ def test(config):
 
 
 def interpolate(config):
-    """Interpolate between two images in latent space.
-    
-    Creates a horizontal grid: [orig1] [recon1] [interp_1] ... [interp_n] [recon2] [orig2]
-    
-    Expected config structure:
-    {
-        'interpolate': {
-            'image1_path': '/path/to/image1.png',
-            'image2_path': '/path/to/image2.png',
-            'output_dir': '/path/to/output',
-            'num_steps': 10,
-            'model_path': '/path/to/checkpoint.pt'
-        },
-        'model': {...}
-    }
-    """
+    """Interpolate between two images in latent space using SLERP."""
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda") if use_cuda else torch.device("cpu")
     logging.info(f"Using device: {device}")
@@ -900,12 +843,10 @@ def interpolate(config):
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
     
     checkpoint = torch.load(model_path, map_location=device)
-    # Use strict=False to support loading old checkpoints with deprecated 'encoder' attribute
     model.load_state_dict(checkpoint, strict=False)
     logging.info(f"Loaded model from: {model_path}")
     model.eval()
     
-    # Load and process both images
     images_pil = []
     latents = []
     orig_dims = []
@@ -979,21 +920,21 @@ def interpolate(config):
         recon1_pil = Image.fromarray(recon1_np, mode='L')
         interp_frames.append(recon1_pil)
         
-        # 3. Interpolation steps with geometric interpolation
-        logging.info(f"Generating {num_steps} interpolation steps with SLERP in latent space...")
+        # SLERP interpolation in latent space
+        logging.info(f"Generating {num_steps} interpolation steps with SLERP...")
         for step in range(num_steps):
             alpha = step / (num_steps - 1) if num_steps > 1 else 0.5
             
             # SLERP in latent space (creates new points between z1 and z2)
             z_interp = utils.slerp_numpy(z1, z2, alpha)
             
-            # Log to verify we're using different latent points
+            # Log endpoint distances for verification
             if step == 0 or step == num_steps - 1:
                 dist_to_z1 = np.linalg.norm(z_interp - z1)
                 dist_to_z2 = np.linalg.norm(z_interp - z2)
                 logging.info(f"  Step {step} (alpha={alpha:.2f}): dist to z1={dist_to_z1:.4f}, dist to z2={dist_to_z2:.4f}")
             
-            # Geometric interpolation of dimensions
+            # Geometric interpolation of output dimensions
             h_interp = int((1 - alpha) * orig_h1 + alpha * orig_h2)
             w_interp = int((1 - alpha) * orig_w1 + alpha * orig_w2)
             
@@ -1057,26 +998,7 @@ def interpolate(config):
 
 
 def clustering(config):
-    """Generate interactive latent space clustering visualizations.
-    
-    Creates interactive HTML files with PCA and/or t-SNE projections,
-    k-means clustering, and archetype markers.
-    
-    Expected config structure:
-    {
-        'clustering': {
-            'model_path': '/path/to/checkpoint.pt',
-            'data_dir': '/path/to/images',
-            'output_dir': '/path/to/output',  # or null to save in model directory
-            'max_samples': 1000,
-            'n_clusters': 15,
-            'viz_method': 'both',  # 'pca', 'tsne', or 'both'
-            'archetypes_dir': '/path/to/archetypes'
-        },
-        'model': {...},
-        'data': {...}
-    }
-    """
+    """Generate interactive latent-space clustering visualizations (PCA / t-SNE)."""
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda") if use_cuda else torch.device("cpu")
     logging.info(f"Using device: {device}")
