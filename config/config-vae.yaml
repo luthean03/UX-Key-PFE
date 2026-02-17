@@ -42,16 +42,20 @@ model:
 # Options: 'l1', 'mse', 'perceptual'
 # 'perceptual' = L1 + SSIM + Gradient + Multi-scale (recommended for wireframes)
 #
-# Standard VAE normalization:
-# - recon_loss: SUM over all pixels (~50,000 for 1M pixels)
-# - kld_loss: SUM over dims, MEAN over batch (~20-50 typically)
+# Reduction strategy for reconstruction loss:
+# - 'batch_mean': sum per image, average over batch → L1 ~10,000 per image, KLD ~10-50
+#                 Use beta_kld ~10-100 (RECOMMANDÉ: meilleur équilibre + interprétabilité)
+# 
+# - 'mean': normalizes by ALL pixels → L1 ~0.01-0.1 per pixel, KLD ~10-50
+#           Use beta_kld ~0.01-1
 #
-# With sum reduction: reconstruction naturally dominates by ~1000x
-# Therefore beta_kld = 1.0 restores proper balance without posterior collapse
+# - 'sum': sums over ALL pixels → L1 ~40,000 (B=4), KLD ~10-50
+#          Use beta_kld ~0.0001-0.001
 loss:
   name: "l1"                     # 'l1', 'mse', or 'perceptual'
-  beta_kld: 1                  # Using sum reduction: naturally balanced at 1.0
-  loss_scale: 1                  # No scaling (natural values for debugging)
+  recon_reduction: "batch_mean"  # 'batch_mean', 'mean', or 'sum'
+  beta_kld: 1.0                 # With 'batch_mean': L1 ~10k, KLD ~20 → beta=50 → ratio 1:1
+  loss_scale: 1.0                # Global scaling factor (for display only)
   warmup_epochs: 0               # KLD warmup epochs (prevents early posterior collapse)
   
   # Component weights (only used when name='perceptual')

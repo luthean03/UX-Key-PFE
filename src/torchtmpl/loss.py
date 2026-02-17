@@ -176,26 +176,35 @@ class SimpleVAELoss(nn.Module):
 
     Standard VAE ELBO loss: L = E[log p(x|z)] - beta * KL(q(z|x) || p(z))
     
-    Normalisation:
-    - recon_loss (L1/MSE): sum over all pixels (~50,000 for 1M pixels)
-    - recon_loss (SSIM): (1 - SSIM) scaled by number of pixels for balance
+    Normalisation strategies:
+    - recon_loss (L1/MSE): 
+        * 'sum': sum over ALL pixels → L1 ~50,000 (1M pixels, B=4)
+                 Use beta ~0.0001-0.001
+        
+        * 'batch_mean': sum per image, average over batch → L1 ~12,500 per image
+                        Use beta ~10-100 (RECOMMANDÉ pour interprétabilité)
+        
+        * 'mean': average over ALL pixels → L1 ~0.01-0.1 per pixel
+                  Use beta ~0.01-1
+    
     - kld_loss: sum over latent dims, mean over batch (standard VAE)
                 Typ. ~50-200 pour latent_dim=128 au début, ~10-50 après convergence
     
-    Pour équilibrer les deux termes:
-    - beta ~0.0001-0.001 si on veut que reconstruction domine (espace latent structuré)
-    - beta ~0.01-0.1 si on veut plus de régularisation (génération depuis N(0,I))
-
+    Recommendation: 'batch_mean' avec beta=10-100 donne le meilleur équilibre
+    et permet d'interpréter recon_loss comme "erreur L1 moyenne par image"
+    
     Args:
         mode: 'l1', 'mse', or 'ssim'
-        beta: weight for KLD (typ. 0.0001-0.01 pour clustering, 0.01-0.1 pour generation)
+        beta: weight for KLD (depends on recon_reduction)
+        recon_reduction: 'sum', 'batch_mean', or 'mean'
         scale: global scaling factor for display only
     """
 
-    def __init__(self, mode='l1', beta=1.0, scale=1.0):
+    def __init__(self, mode='l1', beta=1.0, recon_reduction='batch_mean', scale=1.0):
         super().__init__()
         self.mode = mode
         self.beta = beta
+        self.recon_reduction = recon_reduction
         self.scale = scale
         
         # Initialize SSIM loss module if needed
@@ -208,48 +217,65 @@ class SimpleVAELoss(nn.Module):
         x = x.float()
         
         B, C, H, W = x.shape
+        num_pixels = B * C * H * W
         
-        # Reconstruction loss (sum over all pixels)
-        # Changed from mean to sum to restore natural balance:
-        # - With sum: recon ~50,000 for 1M pixels, kld ~20 for 128 dims
-        # - With beta=1: total ~50,020, recon naturally dominates
-        # This prevents posterior collapse better than mean+small_beta
+        # Reconstruction loss with configurable reduction
         if self.mode == 'ssim':
             # SSIM loss returns (1 - SSIM) in [0, 1] range
-            # Scale by number of pixels to match L1/MSE magnitude
             ssim_loss_raw = self.ssim_loss(recon_x, x, mask)
-            # Scale to be comparable with sum-based losses
-            num_pixels = B * C * H * W
-            recon_loss = ssim_loss_raw * num_pixels
+            if self.recon_reduction == 'mean':
+                recon_loss = ssim_loss_raw  # Already in [0,1]
+            elif self.recon_reduction == 'batch_mean':
+                recon_loss = ssim_loss_raw * (C * H * W)  # Scale to per-image magnitude
+            else:  # sum
+                recon_loss = ssim_loss_raw * num_pixels  # Scale to total magnitude
         elif mask is not None:
             mask = mask.float()
             if self.mode == 'mse':
                 diff = ((recon_x - x) ** 2) * mask
             else:  # l1
                 diff = torch.abs(recon_x - x) * mask
-            # Sum over all masked pixels (no division)
-            recon_loss = diff.sum()
-        elif self.mode == 'mse':
-            recon_loss = F.mse_loss(recon_x, x, reduction='sum')
-        elif self.mode == 'l1':
-            recon_loss = F.l1_loss(recon_x, x, reduction='sum')
+            
+            diff_sum = diff.sum()
+            if self.recon_reduction == 'mean':
+                # Mean over all pixels (all images)
+                num_valid = mask.sum() + 1e-8
+                recon_loss = diff_sum / num_valid
+            elif self.recon_reduction == 'batch_mean':
+                # Mean per image (average over batch)
+                recon_loss = diff_sum / B
+            else:  # sum
+                recon_loss = diff_sum
         else:
-            raise ValueError(f"Unknown recon loss mode: {self.mode}. Use 'l1', 'mse', or 'ssim'.")
+            # Standard L1 or MSE
+            if self.mode == 'mse':
+                if self.recon_reduction == 'batch_mean':
+                    # Sum over pixels, mean over batch
+                    recon_loss = F.mse_loss(recon_x, x, reduction='sum') / B
+                else:
+                    recon_loss = F.mse_loss(recon_x, x, reduction=self.recon_reduction)
+            elif self.mode == 'l1':
+                if self.recon_reduction == 'batch_mean':
+                    # Sum over pixels, mean over batch
+                    recon_loss = F.l1_loss(recon_x, x, reduction='sum') / B
+                else:
+                    recon_loss = F.l1_loss(recon_x, x, reduction=self.recon_reduction)
+            else:
+                raise ValueError(f"Unknown recon loss mode: {self.mode}. Use 'l1', 'mse', or 'ssim'.")
 
         # KL Divergence loss (standard VAE: sum over latent dims, mean over batch)
         # Formula: -0.5 * sum_j(1 + logvar_j - mu_j^2 - exp(logvar_j))
-        # Sum over dimensions is STANDARD for VAE.
-        # Average over batch for loss independent of batch_size.
         mu = mu.float()
         logvar = logvar.float()
         
-        # KLD: sum over latent dimensions, mean over batch
+        # KLD: sum over latent dimensions, mean over batch (consistent with recon batch averaging)
         kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)  # (B,)
         kld_loss = kld_per_sample.mean()  # Average over batch
         
         # Total loss
-        # Reconstruction (sum over pixels) naturally dominates KLD (mean over batch over dims)
-        # E.g., recon ~50,000 vs kld ~20 → reconstruction is forced to be accurate
+        # With recon_reduction='batch_mean': L1 ~10,000, KLD ~10-50 → use beta~10-100
+        # With recon_reduction='mean': L1 ~0.01-0.1, KLD ~10-50 → use beta~0.01-1
+        # With recon_reduction='sum': L1 ~40,000, KLD ~10-50 → use beta~0.0001-0.001
         total = recon_loss + (self.beta * kld_loss)
         
         # Scale for display (does not change relative gradients)
@@ -345,6 +371,7 @@ def get_vae_loss(loss_config: dict):
     Expected keys in loss_config:
       - name: 'l1' | 'mse' | 'ssim' | 'perceptual'
       - beta_kld: float (weight for KL divergence)
+      - recon_reduction: 'sum' | 'batch_mean' | 'mean' (how to reduce reconstruction loss)
       - loss_scale: float (global scaling factor, default 1.0)
       - lambda_ssim: float (weight for SSIM, only for perceptual)
       - lambda_gradient: float (weight for gradient loss, only for perceptual)
@@ -352,9 +379,10 @@ def get_vae_loss(loss_config: dict):
     name = loss_config.get('name', 'l1').lower()
     beta = loss_config.get('beta_kld', loss_config.get('beta', 0.001))
     scale = float(loss_config.get('loss_scale', 1.0))
+    recon_reduction = loss_config.get('recon_reduction', 'batch_mean')  # Default to 'batch_mean'
     
     if name in ('l1', 'mse', 'ssim'):
-        return SimpleVAELoss(mode=name, beta=beta, scale=scale)
+        return SimpleVAELoss(mode=name, beta=beta, recon_reduction=recon_reduction, scale=scale)
     
     if name == 'perceptual':
         return PerceptualVAELoss(
