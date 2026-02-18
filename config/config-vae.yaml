@@ -33,7 +33,7 @@ data:
 model:
   name: "vae"
   class: "VAE"                   # Must match class in vae_models.py
-  latent_dim: 64                # Latent space dimensionality
+  latent_dim: 32                # Latent space dimensionality
   input_channels: 1              # Grayscale images
   dropout_p: 0.1                 # Dropout in decoder
   # use_skip_connections: false  # Skip connections disabled (can cause posterior collapse in VAE)
@@ -71,9 +71,9 @@ optim:
   scheduler:
     name: "CosineAnnealingWarmRestarts"
     params:
-      T_0: 10                    # Restart every 10 epochs
+      T_0: 15                    # Restart every 100 epochs
       T_mult: 2                  # Double period after each restart
-      eta_min: 0.000003          # Minimum learning rate
+      eta_min: 1e-6               # Minimum learning rate
       verbose: true
 
 # Training optimization
@@ -108,26 +108,26 @@ early_stopping:
 # Test (inference) configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml test
 test:
-  test_input_dir: "dataset/vae_dataset_pc/validation_scaled"          # Directory containing test images
+  test_input_dir: "dataset/vae_dataset_pc/png_scaled/validation"          # Directory containing test images
   test_output_dir: "test/test_output"        # Output directory for comparison grids
-  model_path: "logs/VAE_5/last_model.pt"     # Path to trained model checkpoint
+  model_path: "logs/VAE_6/last_model.pt"     # Path to trained model checkpoint
 
 # Interpolation configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml interpolate
 interpolate:
-  image1_path: "test/test_input/wireframe_2983236_linear.png"  # First image path
-  image2_path: "test/test_input/wireframe_3008792_linear.png"  # Second image path
+  image1_path: "dataset/vae_dataset_pc/png_scaled/validation/wireframe_2925866.png"  # First image path
+  image2_path: "dataset/vae_dataset_pc/png_scaled/validation/wireframe_3015001.png"  # Second image path
   output_dir: "test/interpolate_output"            # Output directory for interpolation grid
   num_steps: 10                                     # Number of interpolation steps
-  model_path: "logs/VAE_0/last_model.pt"           # Path to trained model checkpoint
+  model_path: "logs/VAE_6/last_model.pt"           # Path to trained model checkpoint
 
 # Clustering configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml clustering
 clustering:
-  model_path: "logs/VAE_0/last_model.pt"           # Path to trained model checkpoint
+  model_path: "logs/VAE_6/last_model.pt"           # Path to trained model checkpoint
   data_dir: "dataset/vae_dataset_pc/png_scaled/validation"  # Directory containing images to cluster
   output_dir: null                                  # Output directory (null = same as model directory)
   max_samples: 4000                                 # Maximum number of samples to process
   n_clusters: 15                                    # Number of clusters for k-means
   viz_method: "both"                                # Visualization method: 'pca', 'tsne', or 'both'
-  archetypes_dir: "dataset/archetypes_pc/png"      # Optional: archetypes for reference
+  archetypes_dir: "dataset/archetypes_pc/png_scaled"      # Optional: archetypes for reference

@@ -1,14 +1,100 @@
-"""Loss functions for VAE training.
-
-Provides SimpleVAELoss (L1/MSE + KLD) and PerceptualVAELoss
-(L1 + SSIM + gradient + multi-scale + KLD), plus a factory function.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class SimpleVAELoss(nn.Module):
+    """VAE ELBO loss: pixel reconstruction + KL divergence.
+    
+    Adapté pour les wireframes à densité variable (rectangles superposés).
+    Utilise une normalisation 'Per-Pixel' pour stabiliser l'entraînement
+    indépendamment de la taille des images (SmartBatching) ou de la complexité.
 
+    Args:
+        mode: 'l1' (recommandé pour l'accumulation), 'mse', ou 'bce'.
+        beta: Poids pour le terme KLD.
+    """
+
+    def __init__(self, mode: str = 'l1', beta: float = 1.0):
+        super().__init__()
+        self.mode = mode
+        self.beta = beta
+
+    def forward(self, recon_x, x, mu, logvar, mask=None):
+        """
+        Args:
+            recon_x: Image reconstruite (B, C, H, W) -> Valeurs dans [0, 1]
+            x: Image cible (B, C, H, W) -> Valeurs dans [0, 1] (nuances de gris)
+            mu, logvar: Paramètres de l'espace latent
+            mask: Masque binaire des pixels valides (pour géométrie variable)
+        """
+        # Cast pour éviter les erreurs de type (float16/float32)
+        recon_x = recon_x.float()
+        x = x.float()
+        mu = mu.float()
+        logvar = logvar.float()
+
+        # ---------------------------------------------------------------------
+        # 1. NORMALISATION UNIVERSELLE (Le "Per-Pixel")
+        # ---------------------------------------------------------------------
+        # On compte le nombre exact de pixels valides sur lesquels on apprend.
+        # Cela rend la loss invariante à la résolution de l'image.
+        if mask is not None:
+            num_pixels = mask.sum().clamp(min=1.0)
+        else:
+            num_pixels = x.numel()
+
+        # ---------------------------------------------------------------------
+        # 2. TERME DE RECONSTRUCTION (Énergie de l'erreur)
+        # ---------------------------------------------------------------------
+        # On calcule la SOMME des erreurs, pas la moyenne immédiate.
+        
+        if mask is not None:
+            mask = mask.float()
+            if self.mode == 'l1':
+                # Idéal pour vos rectangles : erreur proportionnelle au nombre de couches manquantes
+                error_map = torch.abs(recon_x - x)
+                term_recon = (error_map * mask).sum()
+            elif self.mode == 'mse':
+                # Punit plus fort les grosses erreurs, mais peut flouter les bords des rectangles
+                error_map = (recon_x - x) ** 2
+                term_recon = (error_map * mask).sum()
+            elif self.mode == 'bce':
+                # Moins adapté si vos gris sont des compteurs (0, 1, 2...) normalisés
+                bce = F.binary_cross_entropy(recon_x, x, reduction='none')
+                term_recon = (bce * mask).sum()
+            else:
+                raise ValueError(f"Unknown mode: {self.mode}")
+        else:
+            # Version sans masque (standard)
+            if self.mode == 'l1':
+                term_recon = F.l1_loss(recon_x, x, reduction='sum')
+            elif self.mode == 'mse':
+                term_recon = F.mse_loss(recon_x, x, reduction='sum')
+            elif self.mode == 'bce':
+                term_recon = F.binary_cross_entropy(recon_x, x, reduction='sum')
+            else:
+                raise ValueError(f"Unknown mode: {self.mode}")
+
+        # ---------------------------------------------------------------------
+        # 3. TERME KL DIVERGENCE (Coût de la structure latente)
+        # ---------------------------------------------------------------------
+        # On somme sur toutes les dimensions latentes (dim=1) et tout le batch.
+        # Formule : -0.5 * sum(1 + log(var) - mu^2 - var)
+        kld_sum = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+
+        # ---------------------------------------------------------------------
+        # 4. ASSEMBLAGE ET NORMALISATION
+        # ---------------------------------------------------------------------
+        # On divise les deux termes par le MÊME nombre de pixels.
+        # Ainsi, le ratio entre reconstruction et KL est physiquement cohérent.
+        
+        recon_loss = term_recon / num_pixels
+        kld_loss = kld_sum / num_pixels
+
+        total = recon_loss + self.beta * kld_loss
+
+        return total, recon_loss, kld_loss
+    
 def gaussian_kernel(size: int, sigma: float, device: torch.device) -> torch.Tensor:
     """Create a 2D Gaussian kernel."""
     coords = torch.arange(size, dtype=torch.float32, device=device)
@@ -70,117 +156,7 @@ class SSIMLoss(nn.Module):
         if self.size_average:
             return 1 - ssim_map.mean()
         return 1 - ssim_map.sum()
-
-
-class SimpleVAELoss(nn.Module):
-    """VAE ELBO loss: pixel reconstruction + KL divergence.
-
-    Both terms are normalised to per-dimension averages so that their
-    magnitudes are comparable regardless of image size or latent dim.
-
-    Args:
-        mode: ``'l1'`` or ``'mse'``.
-        beta: Weight for the KLD term.
-    """
-
-    def __init__(self, mode: str = 'l1', beta: float = 1.0):
-        super().__init__()
-        self.mode = mode
-        self.beta = beta
-
-    def forward(self, recon_x, x, mu, logvar, mask=None):
-        recon_x = recon_x.float()
-        x = x.float()
-        mu = mu.float()
-        logvar = logvar.float()
-
-        K = mu.shape[1]
-
-        # Reconstruction: mean over pixels, mean over batch
-        if mask is not None:
-            mask = mask.float()
-            if self.mode == 'mse':
-                diff = ((recon_x - x) ** 2) * mask
-            else:
-                diff = torch.abs(recon_x - x) * mask
-            num_valid = mask.sum().clamp(min=1.0)
-            recon_loss = diff.sum() / num_valid
-        else:
-            if self.mode == 'mse':
-                recon_loss = F.mse_loss(recon_x, x, reduction='mean')
-            elif self.mode == 'l1':
-                recon_loss = F.l1_loss(recon_x, x, reduction='mean')
-            else:
-                raise ValueError(f"Unknown mode: {self.mode}. Use 'l1' or 'mse'.")
-
-        # KLD: mean over latent dims, mean over batch
-        kld_per_sample = -0.5 * torch.sum(
-            1 + logvar - mu.pow(2) - logvar.exp(), dim=1
-        )
-        kld_loss = kld_per_sample.mean() / K
-
-        total = recon_loss + self.beta * kld_loss
-
-        return total, recon_loss, kld_loss
-
-
-class GradientLoss(nn.Module):
-    """Edge-preserving loss using Sobel gradients."""
     
-    def __init__(self):
-        super().__init__()
-        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32)
-        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32)
-        self.register_buffer('sobel_x', sobel_x.view(1, 1, 3, 3))
-        self.register_buffer('sobel_y', sobel_y.view(1, 1, 3, 3))
-    
-    def forward(self, pred: torch.Tensor, target: torch.Tensor,
-                mask: torch.Tensor = None) -> torch.Tensor:
-        pred_gx = F.conv2d(pred, self.sobel_x, padding=1)
-        pred_gy = F.conv2d(pred, self.sobel_y, padding=1)
-        pred_grad = torch.sqrt(pred_gx ** 2 + pred_gy ** 2 + 1e-8)
-        target_gx = F.conv2d(target, self.sobel_x, padding=1)
-        target_gy = F.conv2d(target, self.sobel_y, padding=1)
-        target_grad = torch.sqrt(target_gx ** 2 + target_gy ** 2 + 1e-8)
-        diff = torch.abs(pred_grad - target_grad)
-        if mask is not None:
-            return (diff * mask).sum()
-        return diff.sum()
-
-
-class MultiScaleLoss(nn.Module):
-    """Multi-scale reconstruction loss."""
-    
-    def __init__(self, scales: list = [1.0, 0.5, 0.25], mode: str = 'l1'):
-        super().__init__()
-        self.scales = scales
-        self.mode = mode
-    
-    def forward(self, pred: torch.Tensor, target: torch.Tensor,
-                mask: torch.Tensor = None) -> torch.Tensor:
-        total_loss = 0.0
-        for scale in self.scales:
-            if scale < 1.0:
-                size = (int(pred.shape[2] * scale), int(pred.shape[3] * scale))
-                pred_scaled = F.interpolate(pred, size=size, mode='bilinear', align_corners=False)
-                target_scaled = F.interpolate(target, size=size, mode='bilinear', align_corners=False)
-                mask_scaled = F.interpolate(mask, size=size, mode='nearest') if mask is not None else None
-            else:
-                pred_scaled = pred
-                target_scaled = target
-                mask_scaled = mask
-            if self.mode == 'l1':
-                diff = torch.abs(pred_scaled - target_scaled)
-            else:
-                diff = (pred_scaled - target_scaled) ** 2
-            if mask_scaled is not None:
-                loss = (diff * mask_scaled).sum()
-            else:
-                loss = diff.sum()
-            total_loss += loss * scale
-        return total_loss / sum(self.scales)
-
-
 class PerceptualVAELoss(nn.Module):
     """VAE loss combining L1 + SSIM + gradient + multi-scale + KLD."""
     
