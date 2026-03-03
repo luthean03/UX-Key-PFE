@@ -15,7 +15,6 @@ def makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, ext
 
 #SBATCH --job-name=vae-ux-key
 #SBATCH --nodes=1
-#SBATCH --exclude={exclude_list}
 #SBATCH --partition=gpu_prod_long
 #SBATCH --time=48:00:00
 #SBATCH --output=logslurms/slurm-%A_%a.out
