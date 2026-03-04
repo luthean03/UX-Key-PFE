@@ -273,9 +273,9 @@ def train(config):
 
         pbar = tqdm(train_loader, desc=f"Epoch {e}/{config['nepochs']}", dynamic_ncols=True)
         for i, (inputs, targets, masks) in enumerate(pbar):
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            masks = masks.to(device)
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
+            masks = masks.to(device, non_blocking=True)
 
             # Forward pass with automatic mixed precision if enabled
             if use_amp:
@@ -356,8 +356,8 @@ def train(config):
         ssim_count = 0
         with torch.no_grad():
             for inputs, targets, masks in valid_loader:
-                inputs, targets = inputs.to(device), targets.to(device)
-                masks = masks.to(device)
+                inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+                masks = masks.to(device, non_blocking=True)
                 # Use clean targets for validation (not augmented/noisy inputs)
                 recon, mu, logvar = model(targets, mask=masks)
 

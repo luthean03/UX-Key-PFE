@@ -321,6 +321,8 @@ def get_dataloaders(data_config, use_cuda):
         batch_sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=use_cuda,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
         generator=g,
         collate_fn=padded_masked_collate,
@@ -331,6 +333,8 @@ def get_dataloaders(data_config, use_cuda):
         shuffle=False,
         num_workers=num_workers,
         pin_memory=use_cuda,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
         collate_fn=padded_masked_collate,
     )
