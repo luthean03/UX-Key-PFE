@@ -218,7 +218,7 @@ class VAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def decode(self, z: torch.Tensor, target_size: tuple = None) -> torch.Tensor:
+    def decode(self, z: torch.Tensor, target_size: Optional[tuple] = None) -> torch.Tensor:
         """Decode latent vector, dynamically adapting to the target image ratio.
 
         Args:
