@@ -33,7 +33,7 @@ data:
 # Model architecture
 model:
   class: "VAE"                   # Must match class in vae_models.py
-  latent_dim: 64                 # 73K images supports richer latent space (was 64)
+  latent_dim: 128                 # 73K images supports richer latent space (was 64)
   input_channels: 1              # Grayscale images
   dropout_p: 0.15                # Light dropout — large dataset regularises itself
 
