@@ -498,64 +498,63 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
             else:
                 logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
     
-    # 5. PCA / t-SNE on the validation set
+    # 5. Subsample for visualization (clustering already done on full dataset)
+    if n_total > max_samples:
+        logging.info(f"Subsampling {max_samples} points out of {n_total} for visualization (clustering was on all {n_total})...")
+        rng = np.random.RandomState(42)
+        viz_indices = rng.choice(n_total, size=max_samples, replace=False)
+        viz_indices.sort()
+        viz_latents = valid_latents[viz_indices]
+        viz_cluster_labels = valid_cluster_labels_full[viz_indices]
+        viz_images = [valid_images[i] for i in viz_indices]
+        n_samples = max_samples
+    else:
+        viz_latents = valid_latents
+        viz_cluster_labels = valid_cluster_labels_full
+        viz_images = valid_images
+        n_samples = n_total
+
+    logging.info(f"Visualization will display {n_samples} points (clustered on {n_total})")
+
+    # 6. PCA / t-SNE on the subsampled data
     try:
         from sklearn.manifold import TSNE
         from sklearn.decomposition import PCA
         import matplotlib.cm as cm
         
-        perplexity = min(30.0, max(5.0, n_total / 3))
+        perplexity = min(30.0, max(5.0, n_samples / 3))
         
-        # PCA on ALL validation latents
-        logging.info(f"Generating PCA projection (3 components) on all {n_total} samples...")
+        # PCA on subsampled latents
+        logging.info(f"Generating PCA projection (3 components) on {n_samples} samples...")
         pca_3d = PCA(n_components=3, random_state=42)
-        z_pca_3d_all = pca_3d.fit_transform(valid_latents)
+        z_pca_3d = pca_3d.fit_transform(viz_latents)
         logging.info(f"PCA explained variance: {pca_3d.explained_variance_ratio_[0]:.3f}, "
                     f"{pca_3d.explained_variance_ratio_[1]:.3f}, {pca_3d.explained_variance_ratio_[2]:.3f}")
-        z_pca_2d_all = z_pca_3d_all[:, :2]
+        z_pca_2d = z_pca_3d[:, :2]
         
-        # t-SNE on ALL validation latents (if enough samples)
-        if n_total >= 50:
-            logging.info(f"Generating t-SNE 3D projection with perplexity={perplexity:.1f} on all {n_total} samples...")
+        # t-SNE on subsampled latents (if enough samples)
+        if n_samples >= 50:
+            logging.info(f"Generating t-SNE 3D projection with perplexity={perplexity:.1f} on {n_samples} samples...")
             tsne_3d = TSNE(n_components=3, random_state=42, perplexity=perplexity, 
                           init="pca", learning_rate="auto")
-            z_tsne_3d_all = tsne_3d.fit_transform(valid_latents)
-            z_tsne_2d_all = z_tsne_3d_all[:, :2]
+            z_tsne_3d = tsne_3d.fit_transform(viz_latents)
+            z_tsne_2d = z_tsne_3d[:, :2]
             
-            visualizations_2d = [("PCA", z_pca_2d_all, pca_3d), ("t-SNE", z_tsne_2d_all, None)]
-            visualizations_3d = [("PCA", z_pca_3d_all, pca_3d), ("t-SNE", z_tsne_3d_all, None)]
+            visualizations_2d = [("PCA", z_pca_2d, pca_3d), ("t-SNE", z_tsne_2d, None)]
+            visualizations_3d = [("PCA", z_pca_3d, pca_3d), ("t-SNE", z_tsne_3d, None)]
         else:
-            logging.info(f"Skipping t-SNE (n_total={n_total} < 50)")
-            visualizations_2d = [("PCA", z_pca_2d_all, pca_3d)]
-            visualizations_3d = [("PCA", z_pca_3d_all, pca_3d)]
-        
-        # Subsample for display only (after dim reduction)
-        if n_total > max_samples:
-            logging.info(f"Subsampling {max_samples} points out of {n_total} for display (clustering & dim reduction used all {n_total})...")
-            rng = np.random.RandomState(42)
-            viz_indices = rng.choice(n_total, size=max_samples, replace=False)
-            viz_indices.sort()
-            n_samples = max_samples
-        else:
-            viz_indices = np.arange(n_total)
-            n_samples = n_total
-
-        logging.info(f"Visualization will display {n_samples} points (clustered & projected on {n_total})")
+            logging.info(f"Skipping t-SNE (n_samples={n_samples} < 50)")
+            visualizations_2d = [("PCA", z_pca_2d, pca_3d)]
+            visualizations_3d = [("PCA", z_pca_3d, pca_3d)]
         
         # Generate a figure for each visualisation
         colors = cm.tab20(np.linspace(0, 1, k))
         
         # Process both 2D and 3D visualizations
-        for idx, ((viz_method_2d, z_embedded_2d_all, projection_model_2d), 
-                  (viz_method_3d, z_embedded_3d_all, projection_model_3d)) in enumerate(zip(visualizations_2d, visualizations_3d)):
+        for idx, ((viz_method_2d, z_embedded_2d, projection_model_2d), 
+                  (viz_method_3d, z_embedded_3d, projection_model_3d)) in enumerate(zip(visualizations_2d, visualizations_3d)):
             
             viz_method = viz_method_2d  # Same for both
-            
-            # Subsample embedded coordinates for display
-            z_embedded_2d = z_embedded_2d_all[viz_indices]
-            z_embedded_3d = z_embedded_3d_all[viz_indices]
-            viz_cluster_labels = valid_cluster_labels_full[viz_indices]
-            viz_images = [valid_images[i] for i in viz_indices]
             
             logging.info(f"Visualizing {viz_method} projection with clusters from full {latent_dim}D k-means ({n_samples} displayed / {n_total} total)...")
             
@@ -572,10 +571,10 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                     arch_embedded_3d = projection_model_3d.transform(archetype_latents)
                 else:  # t-SNE: use nearest-neighbour approximation
                     from sklearn.neighbors import NearestNeighbors
-                    nbrs = NearestNeighbors(n_neighbors=1).fit(valid_latents)
+                    nbrs = NearestNeighbors(n_neighbors=1).fit(viz_latents)
                     _, indices = nbrs.kneighbors(archetype_latents)
-                    arch_embedded_2d = z_embedded_2d_all[indices.flatten()]
-                    arch_embedded_3d = z_embedded_3d_all[indices.flatten()]
+                    arch_embedded_2d = z_embedded_2d[indices.flatten()]
+                    arch_embedded_3d = z_embedded_3d[indices.flatten()]
                                 
             # ===== Create Static 2D Matplotlib Visualization for TensorBoard =====
             fig, ax = plt.subplots(figsize=(14, 10))
@@ -606,7 +605,7 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                                fontsize=8, ha='center', va='bottom', 
                                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
             
-            ax.set_title(f"Latent Space {viz_method} - K-means on Full {latent_dim}D (Epoch {epoch}, n={n_samples}/{n_total}, k={k})", fontsize=14)
+            ax.set_title(f"Latent Space {viz_method} - K-means on Full {latent_dim}D (Epoch {epoch}, displayed={n_samples}/{n_total}, k={k})", fontsize=14)
             ax.set_xlabel(f"{viz_method} Component 1")
             ax.set_ylabel(f"{viz_method} Component 2")
             ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=9, ncol=2)

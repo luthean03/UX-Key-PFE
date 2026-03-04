@@ -1001,20 +1001,33 @@ def clustering(config):
         },
     }
     
-    # Subsample indices for display only (dim reduction uses all data)
+    # Subsample for visualization (clustering already done on full dataset)
     if n_total > max_samples:
-        logging.info(f"Will subsample {max_samples} points out of {n_total} for display (clustering & dim reduction on all {n_total})...")
+        logging.info(f"Subsampling {max_samples} points out of {n_total} for visualization (clustering was on all {n_total})...")
         rng = np.random.RandomState(42)
         viz_indices = rng.choice(n_total, size=max_samples, replace=False)
         viz_indices.sort()
+        viz_latents = latents[viz_indices]
+        viz_images = [images[i] for i in viz_indices]
+        viz_image_names = [image_names[i] for i in viz_indices]
+        viz_clustering_results = {}
+        for method_name, result in clustering_results.items():
+            viz_clustering_results[method_name] = {
+                "labels": result["labels"][viz_indices],
+                "archetype_labels": result["archetype_labels"],
+                "n_clusters": result["n_clusters"],
+            }
         n_samples = max_samples
     else:
-        viz_indices = np.arange(n_total)
+        viz_latents = latents
+        viz_images = images
+        viz_image_names = image_names
+        viz_clustering_results = clustering_results
         n_samples = n_total
 
-    logging.info(f"Visualization will display {n_samples} points (clustered & projected on {n_total})")
+    logging.info(f"Visualization will display {n_samples} points (clustered on {n_total})")
     
-    # Generate visualizations
+    # Generate visualizations (PCA/t-SNE on subsampled data for speed)
     from sklearn.decomposition import PCA
     import matplotlib.pyplot as plt
     
@@ -1026,13 +1039,13 @@ def clustering(config):
         viz_methods.append("tsne")
     
     for method in viz_methods:
-        logging.info(f"Generating {method.upper()} visualization on all {n_total} samples...")
+        logging.info(f"Generating {method.upper()} visualization on {n_samples} samples...")
         
         if method == "pca":
-            # PCA projection
+            # PCA projection on subsampled data
             from sklearn.decomposition import PCA
             pca = PCA(n_components=3, random_state=42)
-            z_embedded_all = pca.fit_transform(latents)
+            z_embedded = pca.fit_transform(viz_latents)
             logging.info(f"PCA explained variance: {pca.explained_variance_ratio_[0]:.3f}, "
                         f"{pca.explained_variance_ratio_[1]:.3f}, {pca.explained_variance_ratio_[2]:.3f}")
             
@@ -1042,40 +1055,28 @@ def clustering(config):
                 archetype_embedded = pca.transform(archetype_latents)
         
         elif method == "tsne":
-            # t-SNE projection
-            if n_total < 50:
-                logging.warning(f"Skipping t-SNE: not enough samples ({n_total} < 50)")
+            # t-SNE projection on subsampled data
+            if n_samples < 50:
+                logging.warning(f"Skipping t-SNE: not enough samples ({n_samples} < 50)")
                 continue
             
             from sklearn.manifold import TSNE
-            perplexity = min(30.0, max(5.0, n_total / 3))
+            perplexity = min(30.0, max(5.0, n_samples / 3))
             
             if archetype_latents is not None:
                 # t-SNE doesn't have transform(), fit on combined data
-                combined = np.vstack([latents, archetype_latents])
+                combined = np.vstack([viz_latents, archetype_latents])
                 tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity,
                            init="pca", learning_rate="auto")
                 z_combined = tsne.fit_transform(combined)
-                z_embedded_all = z_combined[:n_total]
-                archetype_embedded = z_combined[n_total:]
+                z_embedded = z_combined[:n_samples]
+                archetype_embedded = z_combined[n_samples:]
             else:
                 tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity,
                            init="pca", learning_rate="auto")
-                z_embedded_all = tsne.fit_transform(latents)
+                z_embedded = tsne.fit_transform(viz_latents)
                 archetype_embedded = None
             logging.info(f"t-SNE completed with perplexity={perplexity}")
-        
-        # Subsample embedded coordinates, labels, images for display
-        z_embedded = z_embedded_all[viz_indices]
-        viz_images = [images[i] for i in viz_indices]
-        viz_image_names = [image_names[i] for i in viz_indices]
-        viz_clustering_results = {}
-        for method_name, result in clustering_results.items():
-            viz_clustering_results[method_name] = {
-                "labels": result["labels"][viz_indices],
-                "archetype_labels": result["archetype_labels"],
-                "n_clusters": result["n_clusters"],
-            }
         
         # Create interactive 3D visualization
         output_filename = f"clustering_{method}_interactive.html"
