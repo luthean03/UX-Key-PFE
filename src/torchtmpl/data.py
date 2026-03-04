@@ -205,8 +205,11 @@ def padded_masked_collate(batch):
     max_h = max([img.shape[1] for img in inputs])
     max_w = max([img.shape[2] for img in inputs])
 
-    # Pad to nearest multiple of 32 (required by VAE architecture)
-    stride = 32
+    # Pad to nearest multiple of 128. Coarser than the minimum 32 required
+    # by the VAE architecture, but drastically reduces the number of unique
+    # tensor shapes, which improves cuDNN kernel-cache hits and keeps
+    # iteration time consistent.
+    stride = 128
     max_h = ((max_h + stride - 1) // stride) * stride
     max_w = ((max_w + stride - 1) // stride) * stride
 
