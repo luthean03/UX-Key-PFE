@@ -167,9 +167,8 @@ class VAE(nn.Module):
         self.latent_dim = config.get("latent_dim", 128)
         self.spp_levels = [1, 2, 4]
         self.dropout_p = config.get("dropout_p", 0.0)
-        self.use_skip_connections = config.get("use_skip_connections", False)
 
-        # Encoder
+        # --- Encoder ---
         self.enc_conv1_conv = nn.Conv2d(1, 64, 7, 2, 3, bias=False)
         self.enc_conv1_gn = MaskedGroupNorm(8, 64)
         self.enc_conv1_relu = nn.ReLU(True)
@@ -185,39 +184,30 @@ class VAE(nn.Module):
         self.fc_mu = nn.Linear(self.spp_out_dim, self.latent_dim)
         self.fc_logvar = nn.Linear(self.spp_out_dim, self.latent_dim)
 
-        # Decoder base: 2:1 aspect ratio (tall for mobile layouts)
-        self.dec_h, self.dec_w = 32, 16
-        self.dec_channels = 256
-        self.fc_decode = nn.Linear(self.latent_dim, self.dec_channels * self.dec_h * self.dec_w)
+        # --- Decoder ---
+        self.dec_channels = 512
+        self.seed_size = 4  # Initial spatial seed 4x4
 
-        # Decoder architecture with optional skip connections and dropout
-        self.dec_unflatten = nn.Unflatten(1, (self.dec_channels, self.dec_h, self.dec_w))
-        
+        # Lightweight dense projection (512 * 4 * 4 = 8192 outputs)
+        self.fc_decode = nn.Linear(self.latent_dim, self.dec_channels * self.seed_size * self.seed_size)
+        self.dec_unflatten = nn.Unflatten(1, (self.dec_channels, self.seed_size, self.seed_size))
+
         if self.dropout_p > 0:
-            self.dec_dropout1 = nn.Dropout2d(self.dropout_p)
-        
-        self.dec_up1 = nn.Upsample(scale_factor=2)
-        
-        # Channel adjustment for optional skip connections
-        if self.use_skip_connections:
-            self.dec_block1 = ResidualBlock(256 + 256, 128)
-        else:
-            self.dec_block1 = ResidualBlock(256, 128)
-        
-        if self.dropout_p > 0:
-            self.dec_dropout2 = nn.Dropout2d(self.dropout_p)
-        
-        self.dec_up2 = nn.Upsample(scale_factor=2)
-        
-        if self.use_skip_connections:
-            self.dec_block2 = ResidualBlock(128 + 128, 64)
-        else:
-            self.dec_block2 = ResidualBlock(128, 64)
-        
-        self.dec_up3 = nn.Upsample(scale_factor=2)
-        self.dec_block3 = ResidualBlock(64, 32)
-        
-        self.dec_up4 = nn.Upsample(scale_factor=2)
+            self.dec_dropout = nn.Dropout2d(self.dropout_p)
+
+        # Progressive channel reduction: 512 -> 256 -> 128 -> 64 -> 32 -> 1
+        self.dec_up1 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec_block1 = ResidualBlock(512, 256)
+
+        self.dec_up2 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec_block2 = ResidualBlock(256, 128)
+
+        self.dec_up3 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec_block3 = ResidualBlock(128, 64)
+
+        self.dec_up4 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec_block4 = ResidualBlock(64, 32)
+
         self.dec_final = nn.Sequential(
             nn.Conv2d(32, 1, 3, 1, 1),
             nn.Sigmoid(),
@@ -228,41 +218,48 @@ class VAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def decode(self, z):
-        """Decode latent code to image. Uses zero-filled dummy skips when
-        skip connections are enabled (e.g. during interpolation)."""
+    def decode(self, z: torch.Tensor, target_size: tuple = None) -> torch.Tensor:
+        """Decode latent vector, dynamically adapting to the target image ratio.
+
+        Args:
+            z: Latent tensor of shape (B, latent_dim).
+            target_size: (Height, Width) of the original input image.
+                         If None, defaults to (256, 128).
+        """
+        if target_size is None:
+            target_size = (256, 128)
+
+        # 1. Project to 4x4 seed
         d = self.fc_decode(z)
         d = self.dec_unflatten(d)
-        
-        if self.dropout_p > 0:
-            d = self.dec_dropout1(d)
-        
-        d = self.dec_up1(d)  # (batch, 256, 128, 8)
 
-        if self.use_skip_connections:
-            dummy_skip1 = torch.zeros(d.shape[0], 256, d.shape[2], d.shape[3],
-                                     device=d.device, dtype=d.dtype)
-            d = torch.cat([d, dummy_skip1], dim=1)
-        
+        if hasattr(self, 'dec_dropout'):
+            d = self.dec_dropout(d)
+
+        # 2. Adapt seed to target aspect ratio (4 upsamples → factor 16)
+        base_h = max(1, target_size[0] // 16)
+        base_w = max(1, target_size[1] // 16)
+        d = F.interpolate(d, size=(base_h, base_w), mode='bilinear', align_corners=False)
+
+        # 3. Standard upsampling path
+        d = self.dec_up1(d)
         d = self.dec_block1(d)
-        
-        if self.dropout_p > 0:
-            d = self.dec_dropout2(d)
-        
-        d = self.dec_up2(d)  # (batch, 128, 256, 16)
 
-        if self.use_skip_connections:
-            dummy_skip2 = torch.zeros(d.shape[0], 128, d.shape[2], d.shape[3],
-                                     device=d.device, dtype=d.dtype)
-            d = torch.cat([d, dummy_skip2], dim=1)
-        
+        d = self.dec_up2(d)
         d = self.dec_block2(d)
-        
+
         d = self.dec_up3(d)
         d = self.dec_block3(d)
+
         d = self.dec_up4(d)
+        d = self.dec_block4(d)
+
         recon = self.dec_final(d)
-        
+
+        # 4. Final adjustment if divisions by 16 were not exact
+        if recon.shape[2:] != target_size:
+            recon = F.interpolate(recon, size=target_size, mode='bilinear', align_corners=False)
+
         return recon
 
     def _encode(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> tuple:
@@ -308,13 +305,10 @@ class VAE(nn.Module):
             assert mask.shape == x.shape, f"Mask shape {mask.shape} != input shape {x.shape}"
             assert mask.dtype == torch.float32, f"Mask dtype should be float32, got {mask.dtype}"
         
-        orig_h, orig_w = x.shape[2], x.shape[3]
+        orig_size = (x.shape[2], x.shape[3])
         
         mu, logvar, z = self._encode(x, mask)
-        recon_small = self.decode(z)
-        
-        recon = F.interpolate(recon_small, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
-        del recon_small
+        recon = self.decode(z, target_size=orig_size)
         
         if mask is not None:
             recon = recon * mask
@@ -322,17 +316,13 @@ class VAE(nn.Module):
         return recon, mu, logvar
     
     def sample(self, num_samples: int = 1, device: torch.device = None,
-               output_size: tuple = (1024, 128)) -> torch.Tensor:
+               target_size: tuple = (1024, 128)) -> torch.Tensor:
         """Generate wireframes by sampling from N(0, I)."""
         if device is None:
             device = next(self.parameters()).device
         
-        # Sample from standard normal
         z = torch.randn(num_samples, self.latent_dim, device=device)
-        samples = self.decode(z)
-        if samples.shape[2:] != output_size:
-            samples = F.interpolate(samples, size=output_size,
-                                   mode='bilinear', align_corners=False)
+        samples = self.decode(z, target_size=target_size)
         return samples
 
     def encode(self, x: torch.Tensor, mask: torch.Tensor = None) -> tuple:

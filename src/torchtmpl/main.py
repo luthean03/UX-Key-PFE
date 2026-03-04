@@ -719,14 +719,11 @@ def interpolate(config):
             h_interp = int((1 - alpha) * orig_h1 + alpha * orig_h2)
             w_interp = int((1 - alpha) * orig_w1 + alpha * orig_w2)
             
-            # Decode interpolated latent
+            # Decode interpolated latent at the interpolated resolution
             z_interp_torch = torch.from_numpy(z_interp).float().unsqueeze(0).to(device)
-            recon = model.decode(z_interp_torch)[0, 0].cpu()
+            recon = model.decode(z_interp_torch, target_size=(h_interp, w_interp))[0, 0].cpu()
             recon_np = (recon.numpy() * 255).astype(np.uint8)
             recon_pil = Image.fromarray(recon_np, mode='L')
-            
-            # Resize to interpolated dimensions
-            recon_pil = recon_pil.resize((w_interp, h_interp), Image.Resampling.LANCZOS)
             interp_frames.append(recon_pil)
         
         # 4. Reconstruction of image 2 (using full forward pass like test())
