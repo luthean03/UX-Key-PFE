@@ -243,24 +243,9 @@ def get_dataloaders(data_config, use_cuda):
             raise ValueError(f"No PNG files found in valid_dir={valid_dir}")
             
     else:
-        # Old format: single data_dir with automatic split
-        data_dir = data_config.get('data_dir', './')
-        files = [f for f in os.listdir(data_dir) if f.endswith('_linear.png')]
-        if len(files) == 0:
-            files = [f for f in os.listdir(data_dir) if f.lower().endswith('.png')]
-        if len(files) == 0:
-            raise ValueError(f"No PNG files found in data_dir={data_dir}")
-
-        # Shuffle and split files into train/valid
-        valid_ratio = float(data_config.get("valid_ratio", 0.2))
-        seed = int(data_config.get('seed', 42))
-        rng = random.Random(seed)
-        rng.shuffle(files)
-        train_size = int((1.0 - valid_ratio) * len(files))
-        train_files = files[:train_size]
-        valid_files = files[train_size:]
-        train_dir = data_dir
-        valid_dir = data_dir
+        raise ValueError(
+            "Config must specify 'train_dir' and 'valid_dir' under data section."
+        )
 
     # Read augmentation params from config (with defaults)
     augment_flag = bool(data_config.get('augment', True))

@@ -1,4 +1,4 @@
-"""General utilities: reproducibility, checkpointing, SLERP, train/test loops."""
+"""General utilities: reproducibility, checkpointing, SLERP."""
 
 import os
 import random
@@ -6,7 +6,6 @@ import random
 import numpy as np
 import torch
 import torch.nn
-import tqdm
 
 
 def set_reproducibility(seed: int) -> None:
@@ -91,48 +90,3 @@ class ModelCheckpoint:
             self.best_score = score
             return True
         return False
-
-
-def train(model, loader, f_loss, optimizer, device, dynamic_display=True):
-    """Train a model for one epoch and return the average loss."""
-
-    model.train()
-
-    total_loss = 0
-    num_samples = 0
-    for i, batch in (pbar := tqdm.tqdm(enumerate(loader))):
-        inputs, targets = batch[0], batch[1]
-        inputs, targets = inputs.to(device), targets.to(device)
-
-        outputs = model(inputs)
-        loss = f_loss(outputs, targets)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += inputs.shape[0] * loss.item()
-        num_samples += inputs.shape[0]
-        pbar.set_description(f"Train loss : {total_loss/num_samples:.2f}")
-
-    return total_loss / num_samples
-
-
-def test(model, loader, f_loss, device):
-    """Evaluate a model on the given loader and return the average loss."""
-
-    model.eval()
-
-    total_loss = 0
-    num_samples = 0
-    for batch in loader:
-        inputs, targets = batch[0], batch[1]
-        inputs, targets = inputs.to(device), targets.to(device)
-
-        outputs = model(inputs)
-        loss = f_loss(outputs, targets)
-
-        total_loss += inputs.shape[0] * loss.item()
-        num_samples += inputs.shape[0]
-
-    return total_loss / num_samples

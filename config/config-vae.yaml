@@ -31,7 +31,6 @@ data:
 
 # Model architecture
 model:
-  name: "vae"
   class: "VAE"                   # Must match class in vae_models.py
   latent_dim: 64                # Latent space dimensionality
   input_channels: 1              # Grayscale images
@@ -91,20 +90,10 @@ logging:
   latent_visualization:
     frequency: 20                # t-SNE visualization every 20 epochs
     max_samples: 500
-  # wandb:
-  #   project: "ux-vae-improved"
-  #   entity: "your-team"
 
 # Training configuration
 nepochs: 100
 
-# Early stopping
-early_stopping:
-  enabled: true
-  monitor: "test_SSIM"           # Monitored metric (or "test_ELBO")
-  mode: "max"                    # 'max' for SSIM, 'min' for ELBO
-  patience: 20                   # Stop if no improvement for 20 epochs
-  min_delta: 0.0001              # Minimum improvement threshold
 # Test (inference) configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml test
 test:

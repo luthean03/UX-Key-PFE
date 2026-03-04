@@ -1,34 +1,31 @@
-"""Quick smoke-tests for model building."""
+"""Quick smoke-test for VAE model building."""
 
 import torch
 
 from . import build_model
 
 
-def test_linear():
-    cfg = {"class": "Linear"}
-    input_size = (3, 32, 32)
-    batch_size = 64
-    num_classes = 18
+def test_vae():
+    cfg = {
+        "class": "VAE",
+        "latent_dim": 32,
+        "input_channels": 1,
+        "dropout_p": 0.1,
+    }
+    input_size = (1, 256, 256)
+    num_classes = 0  # unused for VAE
     model = build_model(cfg, input_size, num_classes)
 
-    input_tensor = torch.randn(batch_size, *input_size)
-    output = model(input_tensor)
-    print(f"Output tensor of size : {output.shape}")
+    batch_size = 2
+    x = torch.randn(batch_size, *input_size)
+    mask = torch.ones(batch_size, 1, *input_size[1:])
 
-
-def test_cnn():
-    cfg = {"class": "VanillaCNN", "num_layers": 4}
-    input_size = (3, 32, 32)
-    batch_size = 64
-    num_classes = 18
-    model = build_model(cfg, input_size, num_classes)
-
-    input_tensor = torch.randn(batch_size, *input_size)
-    output = model(input_tensor)
-    print(f"Output tensor of size : {output.shape}")
+    recon, mu, logvar = model(x, mask=mask)
+    print(f"Input:  {x.shape}")
+    print(f"Recon:  {recon.shape}")
+    print(f"Mu:     {mu.shape}")
+    print(f"Logvar: {logvar.shape}")
 
 
 if __name__ == "__main__":
-    test_linear()
-    test_cnn()
+    test_vae()

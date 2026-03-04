@@ -4,10 +4,6 @@ import torch
 import logging
 
 
-def get_loss(lossname):
-    return getattr(torch.nn, lossname)()
-
-
 def get_optimizer(cfg, parameters):
     """Create an optimizer from a config dict."""
     algo = cfg.get("algo", "Adam")

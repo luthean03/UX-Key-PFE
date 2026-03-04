@@ -23,9 +23,8 @@ MANIFEST
 # Environments
 venv/
 
-# logs and wandb
+# logs
 logs/*
-wandb/*
 
 # pytorch best model and experiments
 best_model.pt
