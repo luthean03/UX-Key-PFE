@@ -21,13 +21,14 @@ data:
   augment: true
   sp_prob: 0.03                     # Salt-and-pepper noise probability
   random_erasing_prob: 0.30         # Random masking probability (lower = less destructive)
-  perspective_p: 0.3                # Perspective transform probability
-  perspective_distortion_scale: 0.10  # Perspective distortion (reduced for wireframe fidelity)
+  hflip_p: 0.5                      # Horizontal flip — layout remains valid
+  vflip_p: 0.5                      # Vertical flip — layout remains valid
+  translate: [0.1, 0.1]             # Random translation (X, Y fraction) — degrees forced to 0
   
-  # Additional augmentations
-  rotation_degrees: 2               # Random rotation range
-  brightness_jitter: 0.08           # Brightness variation (subtle for wireframes)
-  contrast_jitter: 0.08             # Contrast variation
+  # Random resized crop (exploits SPP variable-size support)
+  random_crop_p: 0.3                # Probability of applying random resized crop
+  random_crop_scale: [0.5, 1.0]     # Crop area ratio range
+  random_crop_ratio: [0.75, 1.33]   # Aspect ratio range
 
 # Model architecture
 model:

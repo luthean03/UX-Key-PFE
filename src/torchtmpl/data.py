@@ -72,12 +72,13 @@ class VariableSizeDataset(Dataset):
         augment: bool = False,
         files_list: Optional[List[str]] = None,
         sp_prob: float = 0.02,
-        perspective_p: float = 0.3,
-        perspective_distortion_scale: float = 0.08,
         random_erasing_prob: float = 0.5,
-        rotation_degrees: float = 0,
-        brightness_jitter: float = 0.0,
-        contrast_jitter: float = 0.0
+        hflip_p: float = 0.0,
+        vflip_p: float = 0.0,
+        translate: Optional[tuple] = None,
+        random_crop_p: float = 0.0,
+        random_crop_scale: Optional[tuple] = None,
+        random_crop_ratio: Optional[tuple] = None,
     ) -> None:
         self.root_dir = root_dir
         # Allow passing an explicit files list (used when splitting train/valid)
@@ -92,32 +93,28 @@ class VariableSizeDataset(Dataset):
         self.max_height = int(max_height)
         self.augment = bool(augment)
         self.sp_prob = float(sp_prob)
-
-        # Read augmentation parameters (defaults for backward compatibility)
-        self.perspective_p = float(perspective_p)
-        self.perspective_distortion_scale = float(perspective_distortion_scale)
         self.random_erasing_prob = float(random_erasing_prob)
-        self.rotation_degrees = float(rotation_degrees)
-        self.brightness_jitter = float(brightness_jitter)
-        self.contrast_jitter = float(contrast_jitter)
+        self.hflip_p = float(hflip_p)
+        self.vflip_p = float(vflip_p)
+        self.translate = tuple(translate) if translate else None
+        self.random_crop_p = float(random_crop_p)
+        self.random_crop_scale = tuple(random_crop_scale) if random_crop_scale else (0.5, 1.0)
+        self.random_crop_ratio = tuple(random_crop_ratio) if random_crop_ratio else (0.75, 1.33)
 
         augment_transforms = []
-        
-        if self.rotation_degrees > 0:
-            augment_transforms.append(
-                T.RandomRotation(degrees=self.rotation_degrees, fill=1.0)
-            )
-        
-        augment_transforms.append(
-            T.RandomPerspective(distortion_scale=self.perspective_distortion_scale, p=self.perspective_p)
-        )
 
-        # Brightness / contrast jitter
-        if self.brightness_jitter > 0 or self.contrast_jitter > 0:
+        # Flips: layout symmetry, no aliasing
+        if self.hflip_p > 0:
+            augment_transforms.append(T.RandomHorizontalFlip(p=self.hflip_p))
+        if self.vflip_p > 0:
+            augment_transforms.append(T.RandomVerticalFlip(p=self.vflip_p))
+
+        # Translation: shift without rotation (degrees=0 enforced)
+        if self.translate is not None:
             augment_transforms.append(
-                T.ColorJitter(brightness=self.brightness_jitter, contrast=self.contrast_jitter)
+                T.RandomAffine(degrees=0, translate=self.translate, fill=1.0)
             )
-        
+
         self.augment_transform = T.Compose(augment_transforms) if augment_transforms else None
 
     def __len__(self):
@@ -154,6 +151,19 @@ class VariableSizeDataset(Dataset):
                 clean_image = self.augment_transform(clean_image)
             except Exception:
                 logging.debug("augment_transform failed for %s", img_path)
+
+        # Random resized crop with NEAREST interpolation (preserves discrete pixel values)
+        if self.augment and self.random_crop_p > 0 and random.random() < self.random_crop_p:
+            try:
+                crop_transform = T.RandomResizedCrop(
+                    size=clean_image.size[::-1],  # (H, W)
+                    scale=self.random_crop_scale,
+                    ratio=self.random_crop_ratio,
+                    interpolation=T.InterpolationMode.NEAREST,
+                )
+                clean_image = crop_transform(clean_image)
+            except Exception:
+                logging.debug("RandomResizedCrop failed for %s", img_path)
 
         clean_tensor = TF.to_tensor(clean_image)
 
@@ -247,15 +257,22 @@ def get_dataloaders(data_config, use_cuda):
             "Config must specify 'train_dir' and 'valid_dir' under data section."
         )
 
-    # Read augmentation params from config (with defaults)
+    # Read augmentation params from config
     augment_flag = bool(data_config.get('augment', True))
     sp_prob = float(data_config.get('sp_prob', 0.02))
     random_erasing_prob = float(data_config.get('random_erasing_prob', data_config.get('random_erasing_p', 0.5)))
-    perspective_p = float(data_config.get('perspective_p', 0.3))
-    perspective_distortion_scale = float(data_config.get('perspective_distortion_scale', 0.08))
-    rotation_degrees = float(data_config.get('rotation_degrees', 0))
-    brightness_jitter = float(data_config.get('brightness_jitter', 0.0))
-    contrast_jitter = float(data_config.get('contrast_jitter', 0.0))
+    hflip_p = float(data_config.get('hflip_p', 0.0))
+    vflip_p = float(data_config.get('vflip_p', 0.0))
+    translate = data_config.get('translate', None)
+    if translate is not None:
+        translate = tuple(translate)
+    random_crop_p = float(data_config.get('random_crop_p', 0.0))
+    random_crop_scale = data_config.get('random_crop_scale', None)
+    if random_crop_scale is not None:
+        random_crop_scale = tuple(random_crop_scale)
+    random_crop_ratio = data_config.get('random_crop_ratio', None)
+    if random_crop_ratio is not None:
+        random_crop_ratio = tuple(random_crop_ratio)
 
     # Create dataset instances with augment enabled for train and disabled for validation
     train_dataset = VariableSizeDataset(
@@ -265,12 +282,13 @@ def get_dataloaders(data_config, use_cuda):
         augment=augment_flag,
         files_list=train_files,
         sp_prob=sp_prob,
-        perspective_p=perspective_p,
-        perspective_distortion_scale=perspective_distortion_scale,
         random_erasing_prob=random_erasing_prob,
-        rotation_degrees=rotation_degrees,
-        brightness_jitter=brightness_jitter,
-        contrast_jitter=contrast_jitter,
+        hflip_p=hflip_p,
+        vflip_p=vflip_p,
+        translate=translate,
+        random_crop_p=random_crop_p,
+        random_crop_scale=random_crop_scale,
+        random_crop_ratio=random_crop_ratio,
     )
     valid_dataset = VariableSizeDataset(
         root_dir=valid_dir,
@@ -279,12 +297,7 @@ def get_dataloaders(data_config, use_cuda):
         augment=False,
         files_list=valid_files,
         sp_prob=0.0,
-        perspective_p=perspective_p,
-        perspective_distortion_scale=perspective_distortion_scale,
         random_erasing_prob=0.0,
-        rotation_degrees=0,
-        brightness_jitter=0.0,
-        contrast_jitter=0.0,
     )
 
     def _seed_worker(worker_id: int):
