@@ -40,17 +40,19 @@ model:
 # Loss configuration
 # SimpleVAELoss: L1 reconstruction + KL divergence
 #
-# Both terms are normalised per-dimension:
-#   recon = mean(|x - x̂|) over pixels    → ~0.02–0.10
-#   kld   = mean(KLD_k) over latent dims  → ~0.10–0.50
+# Reconstruction is normalised per-pixel:
+#   recon = sum(|x - x̂| * mask) / num_valid_pixels  → ~0.01–0.10
+# KLD is summed over latent dims, averaged over batch:
+#   kld   = mean_batch(sum_latent(KLD))              → ~10–100 early on
 #
-# With beta_kld=1, the two terms are naturally on the same scale.
-# Increase beta to push toward a more regular latent space;
-# decrease it for sharper reconstructions.
+# Because KLD is much larger in magnitude, beta_kld must be small
+# (e.g. 0.001–0.01) to balance the two terms. KL annealing is
+# strongly recommended to let reconstruction stabilise before
+# the latent regularisation kicks in.
 loss:
   name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 1.0                  # Both terms per-dim normalised → beta=1 is balanced
-  warmup_epochs: 0               # KLD warmup epochs (prevents early posterior collapse)
+  beta_kld: 0.005                # Low beta to balance per-pixel recon vs summed KLD
+  warmup_epochs: 20              # Linear KL annealing: beta goes from 0 to beta_kld
   
   # Component weights (only used when name='perceptual')
   lambda_l1: 1.0                 # Pixel accuracy

@@ -75,22 +75,21 @@ class SimpleVAELoss(nn.Module):
             else:
                 raise ValueError(f"Unknown mode: {self.mode}")
 
-        # ---------------------------------------------------------------------
-        # 3. TERME KL DIVERGENCE (Coût de la structure latente)
-        # ---------------------------------------------------------------------
-        # On somme sur toutes les dimensions latentes (dim=1) et tout le batch.
-        # Formule : -0.5 * sum(1 + log(var) - mu^2 - var)
-        kld_sum = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-
-        # ---------------------------------------------------------------------
-        # 4. ASSEMBLAGE ET NORMALISATION
-        # ---------------------------------------------------------------------
-        # On divise les deux termes par le MÊME nombre de pixels.
-        # Ainsi, le ratio entre reconstruction et KL est physiquement cohérent.
-        
+        # Normalisation de la reconstruction par pixel
         recon_loss = term_recon / num_pixels
-        kld_loss = kld_sum / num_pixels
 
+        # ---------------------------------------------------------------------
+        # 3. TERME KL DIVERGENCE
+        # ---------------------------------------------------------------------
+        # Somme sur l'espace latent (dim=1) pour avoir la KLD totale par image,
+        # puis moyenne sur la dimension du batch (dim=0).
+        # Indépendant de la taille des images — échelle stable.
+        kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+        kld_loss = kld_per_sample.mean()
+
+        # ---------------------------------------------------------------------
+        # 4. ASSEMBLAGE
+        # ---------------------------------------------------------------------
         total = recon_loss + self.beta * kld_loss
 
         return total, recon_loss, kld_loss
