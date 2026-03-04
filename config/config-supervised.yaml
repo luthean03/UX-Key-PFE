@@ -5,7 +5,7 @@ resume: null
 
 data:
   train_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/train"
-  valid_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/train"
+  valid_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"
   archetypes_dir: "dataset_supervised/archetypes_pc/png_scaled"  # Labeled wireframes for latent metrics
   batch_size: 4                    # SmartBatchSampler groups similar-sized images to minimize padding
   num_workers: 4                   # I/O parallelization (reduced for RAM)
@@ -97,7 +97,7 @@ nepochs: 100
 # Test (inference) configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml test
 test:
-  test_input_dir: "dataset/vae_dataset_pc/png_scaled/validation"          # Directory containing test images
+  test_input_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"          # Directory containing test images
   test_output_dir: "test/test_output"        # Output directory for comparison grids
   model_path: "logs/VAE_6/last_model.pt"     # Path to trained model checkpoint
 
@@ -114,9 +114,9 @@ interpolate:
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml clustering
 clustering:
   model_path: "logs/VAE_6/last_model.pt"           # Path to trained model checkpoint
-  data_dir: "dataset/vae_dataset_pc/png_scaled/validation"  # Directory containing images to cluster
+  data_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"  # Directory containing images to cluster
   output_dir: null                                  # Output directory (null = same as model directory)
   max_samples: 4000                                 # Maximum number of samples to process
   n_clusters: 9                                    # Number of clusters for k-means
   viz_method: "both"                                # Visualization method: 'pca', 'tsne', or 'both'
-  archetypes_dir: "dataset/archetypes_pc/png_scaled"      # Optional: archetypes for reference
+  archetypes_dir: "dataset_supervised/archetypes_pc/png_scaled"      # Optional: archetypes for reference
