@@ -273,7 +273,7 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
         traces.push({
           type: 'scatter3d', mode: 'markers+text',
           x: [arch.x[i]], y: [arch.y[i]], z: [arch.z[i]],
-          name: '\u2605 ' + arch.names[i],
+          name: '\u2605 ' + arch.names[i] + ' (Cluster ' + clusterId + ')',
           marker: {size: 15, color: 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')',
                    symbol: 'diamond', line: {color: 'white', width: 2}},
           text: [arch.names[i]],
@@ -419,7 +419,7 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
     from io import BytesIO
     
     # 1. Encode the validation dataset
-    logging.info(f"Encoding validation dataset (max {max_samples} samples)...")
+    logging.info(f"Encoding full validation dataset...")
     model.eval()
     valid_latents = []
     valid_indices = []
@@ -427,8 +427,6 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
 
     with torch.inference_mode():
         for i, (inputs, targets, masks) in enumerate(valid_loader):
-            if i >= max_samples:
-                break
             # Encode clean targets (not augmented/noisy versions)
             targets = targets.to(device)
             masks = masks.to(device)
@@ -446,18 +444,18 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
     
     valid_latents = np.concatenate(valid_latents, axis=0)
     latent_dim = valid_latents.shape[1]
-    n_samples = len(valid_latents)
+    n_total = len(valid_latents)
 
-    logging.info(f"Encoded {n_samples} validation samples (latent_dim={latent_dim})")
+    logging.info(f"Encoded {n_total} validation samples (latent_dim={latent_dim})")
     logging.info(f"Collected {len(valid_images)} images for visualization")
     
     # Verify that we have the same number of latents and images
-    if len(valid_images) != n_samples:
-        logging.warning(f"Mismatch: {n_samples} latents but {len(valid_images)} images. Truncating to minimum.")
-        min_len = min(n_samples, len(valid_images))
+    if len(valid_images) != n_total:
+        logging.warning(f"Mismatch: {n_total} latents but {len(valid_images)} images. Truncating to minimum.")
+        min_len = min(n_total, len(valid_images))
         valid_latents = valid_latents[:min_len]
         valid_images = valid_images[:min_len]
-        n_samples = min_len
+        n_total = min_len
     
     # 2. Load archetypes to determine k
     archetype_latents, archetype_labels, archetype_names, archetype_images = load_archetypes(archetypes_dir, model, device, max_height)
@@ -471,7 +469,7 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
         logging.info(f"Loaded {k} archetypes: {', '.join(archetype_names)}")
     
     # 3. K-means clustering on latent space before dimensionality reduction
-    logging.info(f"Applying k-means (k={k}) on FULL {latent_dim}D latent space...")
+    logging.info(f"Applying k-means (k={k}) on FULL {latent_dim}D latent space ({n_total} samples)...")
     kmeans_full = KMeans(n_clusters=k, random_state=42, n_init=10)
     valid_cluster_labels_full = kmeans_full.fit_predict(valid_latents)
     
@@ -500,52 +498,66 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
             else:
                 logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
     
-    # 5. t-SNE/PCA Visualization with k-means clusters from full latent space
+    # 5. PCA / t-SNE on the validation set
     try:
         from sklearn.manifold import TSNE
         from sklearn.decomposition import PCA
         import matplotlib.cm as cm
         
-        # n_samples already calculated after concatenation
-        perplexity = min(30.0, max(5.0, n_samples / 3))  # Adaptive perplexity based on sample size
+        perplexity = min(30.0, max(5.0, n_total / 3))
         
-        # Generate PCA projection (3 components for 3D viz)
-        logging.info(f"Generating PCA projection (3 components for 3D)...")
+        # PCA on ALL validation latents
+        logging.info(f"Generating PCA projection (3 components) on all {n_total} samples...")
         pca_3d = PCA(n_components=3, random_state=42)
-        z_pca_3d = pca_3d.fit_transform(valid_latents)
+        z_pca_3d_all = pca_3d.fit_transform(valid_latents)
         logging.info(f"PCA explained variance: {pca_3d.explained_variance_ratio_[0]:.3f}, "
                     f"{pca_3d.explained_variance_ratio_[1]:.3f}, {pca_3d.explained_variance_ratio_[2]:.3f}")
+        z_pca_2d_all = z_pca_3d_all[:, :2]
         
-        # Also keep 2D for matplotlib
-        z_pca_2d = z_pca_3d[:, :2]
-        
-        # t-SNE only if enough samples
-        if n_samples >= 50:
-            # t-SNE 3D
-            logging.info(f"Generating t-SNE 3D projection with perplexity={perplexity:.1f} (n_samples={n_samples})")
+        # t-SNE on ALL validation latents (if enough samples)
+        if n_total >= 50:
+            logging.info(f"Generating t-SNE 3D projection with perplexity={perplexity:.1f} on all {n_total} samples...")
             tsne_3d = TSNE(n_components=3, random_state=42, perplexity=perplexity, 
                           init="pca", learning_rate="auto")
-            z_tsne_3d = tsne_3d.fit_transform(valid_latents)
-            z_tsne_2d = z_tsne_3d[:, :2]
+            z_tsne_3d_all = tsne_3d.fit_transform(valid_latents)
+            z_tsne_2d_all = z_tsne_3d_all[:, :2]
             
-            visualizations_2d = [("PCA", z_pca_2d, pca_3d), ("t-SNE", z_tsne_2d, None)]
-            visualizations_3d = [("PCA", z_pca_3d, pca_3d), ("t-SNE", z_tsne_3d, None)]
+            visualizations_2d = [("PCA", z_pca_2d_all, pca_3d), ("t-SNE", z_tsne_2d_all, None)]
+            visualizations_3d = [("PCA", z_pca_3d_all, pca_3d), ("t-SNE", z_tsne_3d_all, None)]
         else:
-            logging.info(f"Skipping t-SNE (n_samples={n_samples} < 50)")
-            visualizations_2d = [("PCA", z_pca_2d, pca_3d)]
-            visualizations_3d = [("PCA", z_pca_3d, pca_3d)]
+            logging.info(f"Skipping t-SNE (n_total={n_total} < 50)")
+            visualizations_2d = [("PCA", z_pca_2d_all, pca_3d)]
+            visualizations_3d = [("PCA", z_pca_3d_all, pca_3d)]
+        
+        # Subsample for display only (after dim reduction)
+        if n_total > max_samples:
+            logging.info(f"Subsampling {max_samples} points out of {n_total} for display (clustering & dim reduction used all {n_total})...")
+            rng = np.random.RandomState(42)
+            viz_indices = rng.choice(n_total, size=max_samples, replace=False)
+            viz_indices.sort()
+            n_samples = max_samples
+        else:
+            viz_indices = np.arange(n_total)
+            n_samples = n_total
+
+        logging.info(f"Visualization will display {n_samples} points (clustered & projected on {n_total})")
         
         # Generate a figure for each visualisation
         colors = cm.tab20(np.linspace(0, 1, k))
         
         # Process both 2D and 3D visualizations
-        for idx, ((viz_method_2d, z_embedded_2d, projection_model_2d), 
-                  (viz_method_3d, z_embedded_3d, projection_model_3d)) in enumerate(zip(visualizations_2d, visualizations_3d)):
+        for idx, ((viz_method_2d, z_embedded_2d_all, projection_model_2d), 
+                  (viz_method_3d, z_embedded_3d_all, projection_model_3d)) in enumerate(zip(visualizations_2d, visualizations_3d)):
             
             viz_method = viz_method_2d  # Same for both
             
-            # Use cluster labels from FULL latent space k-means (not 2D/3D)
-            logging.info(f"Visualizing {viz_method} projection with clusters from full {latent_dim}D k-means...")
+            # Subsample embedded coordinates for display
+            z_embedded_2d = z_embedded_2d_all[viz_indices]
+            z_embedded_3d = z_embedded_3d_all[viz_indices]
+            viz_cluster_labels = valid_cluster_labels_full[viz_indices]
+            viz_images = [valid_images[i] for i in viz_indices]
+            
+            logging.info(f"Visualizing {viz_method} projection with clusters from full {latent_dim}D k-means ({n_samples} displayed / {n_total} total)...")
             
             # Project archetypes to 2D and 3D space for visualization
             arch_embedded_2d = None
@@ -562,15 +574,15 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                     from sklearn.neighbors import NearestNeighbors
                     nbrs = NearestNeighbors(n_neighbors=1).fit(valid_latents)
                     _, indices = nbrs.kneighbors(archetype_latents)
-                    arch_embedded_2d = z_embedded_2d[indices.flatten()]
-                    arch_embedded_3d = z_embedded_3d[indices.flatten()]
+                    arch_embedded_2d = z_embedded_2d_all[indices.flatten()]
+                    arch_embedded_3d = z_embedded_3d_all[indices.flatten()]
                                 
             # ===== Create Static 2D Matplotlib Visualization for TensorBoard =====
             fig, ax = plt.subplots(figsize=(14, 10))
             
             # Colour by k-means cluster (computed on full latent space)
             for cluster_id in range(k):
-                mask = valid_cluster_labels_full == cluster_id
+                mask = viz_cluster_labels == cluster_id
                 if np.sum(mask) > 0:
                     # Cluster label (use archetype name if available)
                     if archetype_latents is not None and cluster_id in cluster_to_archetypes_full:
@@ -594,7 +606,7 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                                fontsize=8, ha='center', va='bottom', 
                                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
             
-            ax.set_title(f"Latent Space {viz_method} - K-means on Full {latent_dim}D (Epoch {epoch}, n={n_samples}, k={k})", fontsize=14)
+            ax.set_title(f"Latent Space {viz_method} - K-means on Full {latent_dim}D (Epoch {epoch}, n={n_samples}/{n_total}, k={k})", fontsize=14)
             ax.set_xlabel(f"{viz_method} Component 1")
             ax.set_ylabel(f"{viz_method} Component 2")
             ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=9, ncol=2)

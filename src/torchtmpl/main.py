@@ -865,12 +865,7 @@ def clustering(config):
     if len(image_files) == 0:
         raise ValueError(f"No images found in {data_dir}")
     
-    # Limit number of samples
-    if len(image_files) > max_samples:
-        logging.info(f"Limiting to {max_samples} samples (out of {len(image_files)})")
-        image_files = image_files[:max_samples]
-    
-    logging.info(f"Encoding {len(image_files)} images...")
+    logging.info(f"Encoding{len(image_files)} images...")
     
     # Encode images
     latents = []
@@ -916,10 +911,10 @@ def clustering(config):
         raise ValueError("No images were successfully encoded")
     
     latents = np.concatenate(latents, axis=0)  # (N, latent_dim)
-    n_samples = len(latents)
+    n_total = len(latents)
     latent_dim = latents.shape[1]
     
-    logging.info(f"Encoded {n_samples} images (latent_dim={latent_dim})")
+    logging.info(f"Encoded {n_total} images (latent_dim={latent_dim})")
     
     # Load archetypes if specified
     archetype_latents = None
@@ -1006,6 +1001,19 @@ def clustering(config):
         },
     }
     
+    # Subsample indices for display only (dim reduction uses all data)
+    if n_total > max_samples:
+        logging.info(f"Will subsample {max_samples} points out of {n_total} for display (clustering & dim reduction on all {n_total})...")
+        rng = np.random.RandomState(42)
+        viz_indices = rng.choice(n_total, size=max_samples, replace=False)
+        viz_indices.sort()
+        n_samples = max_samples
+    else:
+        viz_indices = np.arange(n_total)
+        n_samples = n_total
+
+    logging.info(f"Visualization will display {n_samples} points (clustered & projected on {n_total})")
+    
     # Generate visualizations
     from sklearn.decomposition import PCA
     import matplotlib.pyplot as plt
@@ -1018,13 +1026,13 @@ def clustering(config):
         viz_methods.append("tsne")
     
     for method in viz_methods:
-        logging.info(f"Generating {method.upper()} visualization...")
+        logging.info(f"Generating {method.upper()} visualization on all {n_total} samples...")
         
         if method == "pca":
             # PCA projection
             from sklearn.decomposition import PCA
             pca = PCA(n_components=3, random_state=42)
-            z_embedded = pca.fit_transform(latents)
+            z_embedded_all = pca.fit_transform(latents)
             logging.info(f"PCA explained variance: {pca.explained_variance_ratio_[0]:.3f}, "
                         f"{pca.explained_variance_ratio_[1]:.3f}, {pca.explained_variance_ratio_[2]:.3f}")
             
@@ -1035,27 +1043,39 @@ def clustering(config):
         
         elif method == "tsne":
             # t-SNE projection
-            if n_samples < 50:
-                logging.warning(f"Skipping t-SNE: not enough samples ({n_samples} < 50)")
+            if n_total < 50:
+                logging.warning(f"Skipping t-SNE: not enough samples ({n_total} < 50)")
                 continue
             
             from sklearn.manifold import TSNE
-            perplexity = min(30.0, max(5.0, n_samples / 3))
-            tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity,
-                       init="pca", learning_rate="auto")
-            z_embedded = tsne.fit_transform(latents)
-            logging.info(f"t-SNE completed with perplexity={perplexity}")
+            perplexity = min(30.0, max(5.0, n_total / 3))
             
-            # Project archetypes
-            archetype_embedded = None
             if archetype_latents is not None:
-                # t-SNE doesn't have transform(), need to fit on combined data
+                # t-SNE doesn't have transform(), fit on combined data
                 combined = np.vstack([latents, archetype_latents])
-                tsne_combined = TSNE(n_components=3, random_state=42, perplexity=perplexity,
-                                    init="pca", learning_rate="auto")
-                z_combined = tsne_combined.fit_transform(combined)
-                z_embedded = z_combined[:n_samples]
-                archetype_embedded = z_combined[n_samples:]
+                tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity,
+                           init="pca", learning_rate="auto")
+                z_combined = tsne.fit_transform(combined)
+                z_embedded_all = z_combined[:n_total]
+                archetype_embedded = z_combined[n_total:]
+            else:
+                tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity,
+                           init="pca", learning_rate="auto")
+                z_embedded_all = tsne.fit_transform(latents)
+                archetype_embedded = None
+            logging.info(f"t-SNE completed with perplexity={perplexity}")
+        
+        # Subsample embedded coordinates, labels, images for display
+        z_embedded = z_embedded_all[viz_indices]
+        viz_images = [images[i] for i in viz_indices]
+        viz_image_names = [image_names[i] for i in viz_indices]
+        viz_clustering_results = {}
+        for method_name, result in clustering_results.items():
+            viz_clustering_results[method_name] = {
+                "labels": result["labels"][viz_indices],
+                "archetype_labels": result["archetype_labels"],
+                "n_clusters": result["n_clusters"],
+            }
         
         # Create interactive 3D visualization
         output_filename = f"clustering_{method}_interactive.html"
@@ -1063,11 +1083,11 @@ def clustering(config):
         
         vizualisation.create_interactive_3d_visualization(
             z_embedded_3d=z_embedded,
-            clustering_results=clustering_results,
+            clustering_results=viz_clustering_results,
             archetype_embedded=archetype_embedded,
             archetype_names=archetype_names if archetype_names else [],
-            train_images=images,
-            train_image_names=image_names,
+            train_images=viz_images,
+            train_image_names=viz_image_names,
             archetype_images=archetype_images,
             viz_method=method.upper(),
             epoch=0,
