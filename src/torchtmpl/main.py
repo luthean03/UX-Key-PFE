@@ -132,6 +132,14 @@ def train(config):
         else:
             logging.warning(f"Checkpoint file not found: {resume_path}")
 
+    # Compile model for speed (PyTorch 2.x) — dynamic=True handles variable input sizes
+    if use_cuda and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model, dynamic=True)
+            logging.info("Model compiled with torch.compile(dynamic=True)")
+        except Exception as e:
+            logging.warning(f"torch.compile failed, falling back to eager mode: {e}")
+
     # Loss
     logging.info("= Loss")
     loss_display = config.get("loss", {"name": "l1", "beta_kld": config.get("optim", {}).get("beta_kld", 0.001)})
