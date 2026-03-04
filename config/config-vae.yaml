@@ -15,27 +15,26 @@ data:
   max_height: 3000                  # Maximum height (crop if exceeded)
   
   # Denoising augmentation
-  noise_level: 0.20                 # Gaussian noise level for robustness
+  noise_level: 0.15                 # Gaussian noise (0.20 was aggressive, risks blurring fine lines)
   
   # Data augmentation (applied to training only)
   augment: true
-  sp_prob: 0.04                     # Salt-and-pepper noise probability
-  random_erasing_prob: 0.35         # Random masking probability
+  sp_prob: 0.03                     # Salt-and-pepper noise probability
+  random_erasing_prob: 0.30         # Random masking probability (lower = less destructive)
   perspective_p: 0.3                # Perspective transform probability
-  perspective_distortion_scale: 0.12  # Perspective distortion magnitude
+  perspective_distortion_scale: 0.10  # Perspective distortion (reduced for wireframe fidelity)
   
   # Additional augmentations
   rotation_degrees: 2               # Random rotation range
-  brightness_jitter: 0.1            # Brightness variation
-  contrast_jitter: 0.1              # Contrast variation
+  brightness_jitter: 0.08           # Brightness variation (subtle for wireframes)
+  contrast_jitter: 0.08             # Contrast variation
 
 # Model architecture
 model:
   class: "VAE"                   # Must match class in vae_models.py
-  latent_dim: 64                # Latent space dimensionality
+  latent_dim: 128                 # 73K images supports richer latent space (was 64)
   input_channels: 1              # Grayscale images
-  dropout_p: 0.1                 # Dropout in decoder
-  # use_skip_connections: false  # Skip connections disabled (can cause posterior collapse in VAE)
+  dropout_p: 0.15                # Light dropout — large dataset regularises itself
 
 # Loss configuration
 # SimpleVAELoss: L1 reconstruction + KL divergence
@@ -51,8 +50,8 @@ model:
 # the latent regularisation kicks in.
 loss:
   name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 0.005                # Low beta to balance per-pixel recon vs summed KLD
-  warmup_epochs: 20              # Linear KL annealing: beta goes from 0 to beta_kld
+  beta_kld: 0.003                # Slightly lower for 128-dim latent (more KL pressure per dim)
+  warmup_epochs: 25              # 25% of training — lets reconstruction stabilise first
   
   # Component weights (only used when name='perceptual')
   lambda_l1: 1.0                 # Pixel accuracy
@@ -66,7 +65,7 @@ optim:
   algo: "AdamW"
   params:
     lr: 0.0003                   # Peak learning rate (used as max_lr by OneCycleLR)
-    weight_decay: 0.0001         # L2 regularization
+    weight_decay: 0.00005        # Lighter decay — large dataset needs less explicit regularisation
   
   # Learning rate scheduler
   scheduler:
@@ -75,13 +74,12 @@ optim:
       max_lr: 0.0003             # Peak LR (should match optim.params.lr)
       pct_start: 0.3             # 30% of training is warmup
       div_factor: 25.0           # initial_lr = max_lr / 25 = 1.2e-5
-      final_div_factor: 10000.0  # min_lr = initial_lr / 10000 = 1.2e-9
+      final_div_factor: 1000.0   # min_lr = initial_lr / 1000 ≈ 1.2e-8 (gentler tail)
       anneal_strategy: "cos"     # Cosine annealing after warmup
 
 # Training optimization
-# Note: lr and weight_decay are defined in optim.params
 optimization:
-  accumulation_steps: 4          # Gradient accumulation (effective batch = batch_size * accumulation_steps = 16)
+  accumulation_steps: 8          # Effective batch = 4 × 8 = 32 (smoother gradients)
   mixed_precision: true          # Automatic mixed precision for speed and memory
 
 # Logging configuration

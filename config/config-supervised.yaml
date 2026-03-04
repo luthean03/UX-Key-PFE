@@ -15,27 +15,26 @@ data:
   max_height: 3000                  # Maximum height (crop if exceeded)
   
   # Denoising augmentation
-  noise_level: 0.20                 # Gaussian noise level for robustness
+  noise_level: 0.15                 # Gaussian noise (0.20 can blur thin wireframe lines)
   
   # Data augmentation (applied to training only)
   augment: true
-  sp_prob: 0.04                     # Salt-and-pepper noise probability
-  random_erasing_prob: 0.35         # Random masking probability
-  perspective_p: 0.3                # Perspective transform probability
-  perspective_distortion_scale: 0.12  # Perspective distortion magnitude
+  sp_prob: 0.03                     # Salt-and-pepper noise probability
+  random_erasing_prob: 0.25         # Random masking (lower — small dataset, preserve signal)
+  perspective_p: 0.25               # Perspective transform probability
+  perspective_distortion_scale: 0.08 # Perspective distortion (conservative for wireframes)
   
   # Additional augmentations
-  rotation_degrees: 2               # Random rotation range
-  brightness_jitter: 0.1            # Brightness variation
-  contrast_jitter: 0.1              # Contrast variation
+  rotation_degrees: 1.5             # Tighter rotation (wireframes are axis-aligned)
+  brightness_jitter: 0.08           # Brightness variation
+  contrast_jitter: 0.08             # Contrast variation
 
 # Model architecture
 model:
   class: "VAE"                   # Must match class in vae_models.py
-  latent_dim: 64                # Latent space dimensionality
+  latent_dim: 64                 # Compact latent for 17K images — promotes tighter clusters
   input_channels: 1              # Grayscale images
-  dropout_p: 0.1                 # Dropout in decoder
-  # use_skip_connections: false  # Skip connections disabled (can cause posterior collapse in VAE)
+  dropout_p: 0.15                # Higher dropout — small dataset needs more regularisation
 
 # Loss configuration
 # SimpleVAELoss: L1 reconstruction + KL divergence
@@ -51,8 +50,8 @@ model:
 # the latent regularisation kicks in.
 loss:
   name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 0.005                # Low beta to balance per-pixel recon vs summed KLD
-  warmup_epochs: 20              # Linear KL annealing: beta goes from 0 to beta_kld
+  beta_kld: 0.005                # Balanced for 64-dim latent
+  warmup_epochs: 20              # 13% of 150 epochs — reconstruction-first strategy
   
   # Component weights (only used when name='perceptual')
   lambda_l1: 1.0                 # Pixel accuracy
@@ -65,23 +64,22 @@ loss:
 optim:
   algo: "AdamW"
   params:
-    lr: 0.0003                   # Peak learning rate (used as max_lr by OneCycleLR)
-    weight_decay: 0.0001         # L2 regularization
+    lr: 0.0002                   # Slightly lower peak LR for small dataset stability
+    weight_decay: 0.0003         # Stronger decay to prevent overfitting on 17K images
   
   # Learning rate scheduler
   scheduler:
     name: "OneCycleLR"           # Warmup + Cosine Decay (steps per batch)
     params:
-      max_lr: 0.0003             # Peak LR (should match optim.params.lr)
-      pct_start: 0.3             # 30% of training is warmup
-      div_factor: 25.0           # initial_lr = max_lr / 25 = 1.2e-5
-      final_div_factor: 10000.0  # min_lr = initial_lr / 10000 = 1.2e-9
+      max_lr: 0.0002             # Peak LR (match optim.params.lr)
+      pct_start: 0.25            # 25% warmup (shorter — smaller dataset converges faster)
+      div_factor: 25.0           # initial_lr = max_lr / 25 = 8e-6
+      final_div_factor: 1000.0   # min_lr = initial_lr / 1000 ≈ 8e-9
       anneal_strategy: "cos"     # Cosine annealing after warmup
 
 # Training optimization
-# Note: lr and weight_decay are defined in optim.params
 optimization:
-  accumulation_steps: 4          # Gradient accumulation (effective batch = batch_size * accumulation_steps = 16)
+  accumulation_steps: 8          # Effective batch = 4 × 8 = 32 (critical for small dataset)
   mixed_precision: true          # Automatic mixed precision for speed and memory
 
 # Logging configuration
@@ -95,7 +93,7 @@ logging:
     max_samples: 500
 
 # Training configuration
-nepochs: 100
+nepochs: 150                      # More epochs for small dataset (OneCycleLR adapts automatically)
 
 # Test (inference) configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml test
