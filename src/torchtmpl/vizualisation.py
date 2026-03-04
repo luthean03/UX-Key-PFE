@@ -91,17 +91,33 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
     return latents, labels, label_names, images
 
 
-def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype_embedded, archetype_names,
-    archetype_cluster_labels, train_images, colors, k,
-    viz_method, epoch, n_samples, latent_dim, output_path, train_image_names=None, archetype_images=None):
-    """Create an interactive 3D Plotly scatter with embedded image thumbnails."""
+def create_interactive_3d_visualization(z_embedded_3d, clustering_results, archetype_embedded, archetype_names,
+    train_images, viz_method, epoch, n_samples, latent_dim, output_path,
+    train_image_names=None, archetype_images=None):
+    """Create an interactive 3D Plotly scatter with multiple clustering methods and a dropdown switcher.
+
+    Args:
+        z_embedded_3d: (N, 3) ndarray of embedded coordinates.
+        clustering_results: dict mapping method name to
+            {"labels": ndarray(N,), "archetype_labels": ndarray(M,) or None, "n_clusters": int}.
+        archetype_embedded: (M, 3) ndarray or None.
+        archetype_names: list[str] of archetype names.
+        train_images: list of image tensors.
+        viz_method: str, e.g. "PCA" or "t-SNE".
+        epoch: int.
+        n_samples: int.
+        latent_dim: int.
+        output_path: pathlib.Path.
+        train_image_names: optional list[str].
+        archetype_images: optional list of (padded, mask, h, w) tuples.
+    """
     try:
-        import plotly.graph_objects as go
+        import json
         import base64
         from io import BytesIO
-        import json
+        import matplotlib.cm as cm
 
-        logging.info(f"Creating interactive 3D {viz_method} visualization with Plotly...")
+        logging.info(f"Creating interactive 3D {viz_method} visualization with multi-clustering support...")
 
         def tensor_to_base64(img_tensor, max_size=200):
             img_np = (img_tensor.squeeze().numpy() * 255).astype(np.uint8)
@@ -114,210 +130,279 @@ def create_interactive_3d_visualization(z_embedded_3d, cluster_labels, archetype
             pil_img.save(buf, format='PNG')
             return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
 
-        fig = go.Figure()
+        # Prepare point coordinates
+        points_x = z_embedded_3d[:, 0].tolist()
+        points_y = z_embedded_3d[:, 1].tolist()
+        points_z = z_embedded_3d[:, 2].tolist()
 
-        logging.info(f"Creating traces for {k} clusters from {len(z_embedded_3d)} points")
-        logging.info(f"cluster_labels shape: {cluster_labels.shape}, unique values: {np.unique(cluster_labels)}")
-        
-        for cluster_id in range(k):
-            mask = cluster_labels == cluster_id
-            n_points = np.sum(mask)
-            if n_points == 0:
-                logging.warning(f"Cluster {cluster_id}: 0 points (skipping)")
-                continue
-            
-            cluster_points = z_embedded_3d[mask]
-            cluster_indices = np.where(mask)[0]
-            
-            logging.info(f"Cluster {cluster_id}: {n_points} points, cluster_points.shape={cluster_points.shape}")
-
-            hover_texts = []
-            for idx in cluster_indices:
-                # Use real filename if available, otherwise fallback to Sample N
-                img_name = train_image_names[idx] if train_image_names and idx < len(train_image_names) else f"Sample {idx}"
-                # Simple text hover (image preview handled by custom tooltip)
-                hover_texts.append(f"<b>{img_name}</b><br>Cluster {cluster_id}")
-
-            color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
-            fig.add_trace(go.Scatter3d(
-                x=cluster_points[:, 0].tolist(),
-                y=cluster_points[:, 1].tolist(),
-                z=cluster_points[:, 2].tolist(),
-                mode='markers',
-                name=f'Cluster {cluster_id}',
-                marker=dict(size=6, color=f'rgb{color_rgb}', opacity=0.8, line=dict(width=0.5, color='white')),
-                text=hover_texts,
-                hovertemplate='%{text}<extra></extra>',
-                customdata=cluster_indices.tolist()
-            ))
-            
-            logging.info(f"Added trace for Cluster {cluster_id} with {len(cluster_points)} points")
-
-        if archetype_embedded is not None and len(archetype_embedded) > 0:
-            for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_labels)):
-                color_rgb = tuple(int(c * 255) for c in colors[cluster_id][:3])
-                # archetype index in combined images list = n_samples + i
-                archetype_idx = len(train_images) + i
-                fig.add_trace(go.Scatter3d(
-                    x=[archetype_embedded[i, 0]],
-                    y=[archetype_embedded[i, 1]],
-                    z=[archetype_embedded[i, 2]],
-                    mode='markers+text',
-                    name=f'★ {name}',
-                    marker=dict(size=15, color=f'rgb{color_rgb}', symbol='diamond', line=dict(color='white', width=2)),
-                    text=[name],
-                    textposition='top center',
-                    textfont=dict(size=10, color='black'),
-                    hovertemplate=f'<b>{name}</b><br>Cluster {cluster_id}<extra></extra>',
-                    customdata=[archetype_idx]
-                ))
-
-        fig.update_layout(
-            title=f"Interactive 3D {viz_method} - K-means on {latent_dim}D Latent Space<br>Epoch {epoch}, n={n_samples}, k={k}",
-            scene=dict(xaxis_title=f'{viz_method} Component 1', yaxis_title=f'{viz_method} Component 2', zaxis_title=f'{viz_method} Component 3'),
-            width=1200, height=800, hovermode='closest', showlegend=True
-        )
-
-        images_base64 = [tensor_to_base64(img) for img in train_images]
-        # Use real filenames if provided, otherwise use Sample N
-        # Compare with len(train_images) not len(images_base64) because archetypes are added after
+        # Image names
         if train_image_names and len(train_image_names) == len(train_images):
-            image_names = train_image_names.copy()  # Create a copy to extend safely
+            image_names = list(train_image_names)
         else:
             image_names = [f"Sample {i}" for i in range(len(train_images))]
-        
-        # Add archetype images and names
-        if archetype_images is not None and len(archetype_images) > 0:
-            for i, (padded, mask, h, w) in enumerate(archetype_images):
-                # Extract the original image (unpadded) from padded tensor
-                arch_img = padded[0, :, :h, :w]  # (C, H, W)
-                images_base64.append(tensor_to_base64(arch_img))
-            
-            # Add archetype names
-            if archetype_names:
-                image_names.extend([f"★ {name}" for name in archetype_names])
 
-        fig_json = fig.to_json()
-        html = f"""
-<!DOCTYPE html>
+        # Base64 encode images
+        images_base64 = [tensor_to_base64(img) for img in train_images]
+        n_train = len(train_images)
+
+        # Archetype data
+        arch_js = None
+        if archetype_embedded is not None and len(archetype_embedded) > 0:
+            arch_js = {
+                "x": archetype_embedded[:, 0].tolist(),
+                "y": archetype_embedded[:, 1].tolist(),
+                "z": archetype_embedded[:, 2].tolist(),
+                "names": list(archetype_names) if archetype_names else [],
+            }
+            # Add archetype images
+            if archetype_images is not None and len(archetype_images) > 0:
+                for i, (padded, mask_t, h, w) in enumerate(archetype_images):
+                    arch_img = padded[0, :, :h, :w]
+                    images_base64.append(tensor_to_base64(arch_img))
+                if archetype_names:
+                    image_names.extend([f"\u2605 {name}" for name in archetype_names])
+
+        # Clustering results (convert numpy arrays to lists)
+        method_names = list(clustering_results.keys())
+        clustering_js = {}
+        max_k = 0
+        for method_name, result in clustering_results.items():
+            k = int(result["n_clusters"])
+            max_k = max(max_k, k)
+            clustering_js[method_name] = {
+                "labels": result["labels"].tolist(),
+                "archLabels": result["archetype_labels"].tolist() if result.get("archetype_labels") is not None else None,
+                "k": k,
+            }
+
+        # Generate color palette (tab20)
+        colors_rgba = cm.tab20(np.linspace(0, 1, max(max_k, 1)))
+        colors_rgb = [[int(c[0] * 255), int(c[1] * 255), int(c[2] * 255)] for c in colors_rgba]
+
+        # Build data JSON
+        data_obj = {
+            "x": points_x, "y": points_y, "z": points_z,
+            "names": image_names,
+            "images": images_base64,
+            "archetypes": arch_js,
+            "nTrain": n_train,
+            "clustering": clustering_js,
+            "methodNames": method_names,
+            "colors": colors_rgb,
+        }
+        data_json = json.dumps(data_obj)
+
+        # Layout
+        layout_obj = {
+            "scene": {
+                "xaxis": {"title": f"{viz_method} Component 1"},
+                "yaxis": {"title": f"{viz_method} Component 2"},
+                "zaxis": {"title": f"{viz_method} Component 3"},
+            },
+            "width": 1200, "height": 800,
+            "hovermode": "closest",
+            "showlegend": True,
+            "margin": {"t": 80},
+        }
+        layout_json = json.dumps(layout_obj)
+
+        # Title template ('{method}' placeholder for JS)
+        title_template = f"Interactive 3D {viz_method} - {{method}} on {latent_dim}D Latent Space | Epoch {epoch}, n={n_samples}"
+
+        # Build dropdown options HTML
+        options_html = "\n".join(
+            f'        <option value="{name}">{name}</option>' for name in method_names
+        )
+
+        # JavaScript code (plain string — no f-string brace escaping needed)
+        js_code = r"""
+(function() {
+  var DATA = __DATA__;
+  var LAYOUT = __LAYOUT__;
+  var TITLE_TPL = '__TITLE_TPL__';
+
+  var gd = document.getElementById('plotly-div');
+  var tooltip = document.getElementById('hover-tooltip');
+  var tooltipImg = document.getElementById('tooltip-img');
+  var tooltipText = document.getElementById('tooltip-text');
+  var lastMouseX = 0, lastMouseY = 0;
+
+  document.addEventListener('mousemove', function(e) {
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+  });
+
+  function buildTraces(methodName) {
+    var method = DATA.clustering[methodName];
+    if (!method) return [];
+    var traces = [];
+    var k = method.k;
+
+    for (var c = 0; c < k; c++) {
+      var cx = [], cy = [], cz = [], texts = [], cdata = [];
+      for (var i = 0; i < DATA.x.length; i++) {
+        if (method.labels[i] === c) {
+          cx.push(DATA.x[i]);
+          cy.push(DATA.y[i]);
+          cz.push(DATA.z[i]);
+          texts.push('<b>' + DATA.names[i] + '</b><br>Cluster ' + c);
+          cdata.push(i);
+        }
+      }
+      if (cx.length === 0) continue;
+      var col = DATA.colors[c % DATA.colors.length];
+      traces.push({
+        type: 'scatter3d', mode: 'markers',
+        x: cx, y: cy, z: cz,
+        name: 'Cluster ' + c + ' (' + cx.length + ')',
+        marker: {size: 6, color: 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')', opacity: 0.8,
+                 line: {width: 0.5, color: 'white'}},
+        text: texts,
+        hovertemplate: '%{text}<extra></extra>',
+        customdata: cdata
+      });
+    }
+
+    // Add archetypes
+    if (DATA.archetypes && method.archLabels) {
+      var arch = DATA.archetypes;
+      for (var i = 0; i < arch.x.length; i++) {
+        var clusterId = method.archLabels[i];
+        var col = DATA.colors[clusterId % DATA.colors.length];
+        var archIdx = DATA.nTrain + i;
+        traces.push({
+          type: 'scatter3d', mode: 'markers+text',
+          x: [arch.x[i]], y: [arch.y[i]], z: [arch.z[i]],
+          name: '\u2605 ' + arch.names[i],
+          marker: {size: 15, color: 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')',
+                   symbol: 'diamond', line: {color: 'white', width: 2}},
+          text: [arch.names[i]],
+          textposition: 'top center',
+          textfont: {size: 10, color: 'black'},
+          hovertemplate: '<b>' + arch.names[i] + '</b><br>Cluster ' + clusterId + ' (' + methodName + ')<extra></extra>',
+          customdata: [archIdx]
+        });
+      }
+    }
+    return traces;
+  }
+
+  function updatePlot(methodName) {
+    var traces = buildTraces(methodName);
+    var updatedLayout = JSON.parse(JSON.stringify(LAYOUT));
+    updatedLayout.title = TITLE_TPL.replace('{method}', methodName) + ', k=' + DATA.clustering[methodName].k;
+    Plotly.react(gd, traces, updatedLayout, {responsive: true});
+  }
+
+  // Initial plot
+  var currentMethod = DATA.methodNames[0];
+  updatePlot(currentMethod);
+
+  // Method switch handler
+  document.getElementById('method-selector').addEventListener('change', function() {
+    currentMethod = this.value;
+    updatePlot(currentMethod);
+  });
+
+  // Hover tooltip
+  gd.on('plotly_hover', function(eventData) {
+    try {
+      var pt = eventData.points[0];
+      var idx = pt.customdata;
+      if (Array.isArray(idx)) idx = idx[0];
+      if (idx == null || idx >= DATA.images.length) return;
+      var img = DATA.images[idx];
+      var name = DATA.names[idx] || 'Sample ' + idx;
+      var cluster = pt.fullData.name || 'Unknown';
+      if (img) {
+        tooltipImg.src = img;
+        tooltipText.innerHTML = '<b>' + name + '</b><br>' + cluster;
+        tooltip.style.display = 'block';
+        var x = lastMouseX + 20;
+        var y = lastMouseY - 120;
+        if (x + 300 > window.innerWidth) x = lastMouseX - 300;
+        if (y < 0) y = 10;
+        if (y + 400 > window.innerHeight) y = window.innerHeight - 420;
+        tooltip.style.left = x + 'px';
+        tooltip.style.top = y + 'px';
+      }
+    } catch (e) {
+      console.error('Hover error', e);
+    }
+  });
+
+  gd.on('plotly_unhover', function() {
+    tooltip.style.display = 'none';
+  });
+})();
+"""
+        # Replace JS placeholders with serialized data
+        js_code = js_code.replace("__DATA__", data_json)
+        js_code = js_code.replace("__LAYOUT__", layout_json)
+        js_code = js_code.replace("__TITLE_TPL__", title_template)
+
+        # Final HTML
+        html = f"""<!DOCTYPE html>
 <html>
   <head>
     <meta charset="utf-8" />
     <title>Interactive 3D {viz_method} - Epoch {epoch}</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
     <style>
-      body {{ margin:0; }}
+      body {{ margin: 0; font-family: 'Segoe UI', Arial, sans-serif; }}
+      #toolbar {{
+        position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+        z-index: 100; background: rgba(255,255,255,0.95); padding: 8px 20px;
+        border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+        display: flex; align-items: center; gap: 12px;
+      }}
+      #toolbar label {{ font-weight: 600; font-size: 14px; color: #2c3e50; }}
+      #method-selector {{
+        padding: 6px 12px; font-size: 14px; border: 2px solid #3498db;
+        border-radius: 6px; background: white; cursor: pointer; font-weight: 500;
+      }}
+      #method-selector:hover {{ border-color: #2980b9; }}
       #hover-tooltip {{
-        position: fixed;
-        background: white;
-        border: 3px solid #2c3e50;
-        border-radius: 10px;
-        padding: 15px;
+        position: fixed; background: white; border: 3px solid #2c3e50;
+        border-radius: 10px; padding: 15px;
         box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-        pointer-events: none;
-        z-index: 9999;
-        display: none;
-        max-width: 280px;
-        max-height: 400px;
+        pointer-events: none; z-index: 9999; display: none;
+        max-width: 280px; max-height: 400px;
       }}
       #hover-tooltip img {{
-        display: block;
-        width: 100%;
-        max-height: 200px;
-        object-fit: contain;
-        border-radius: 6px;
-        background: #f5f5f5;
+        display: block; width: 100%; max-height: 200px;
+        object-fit: contain; border-radius: 6px; background: #f5f5f5;
       }}
       #hover-tooltip .info {{
-        margin-top: 12px;
-        font-family: 'Segoe UI', Arial, sans-serif;
-        font-size: 16px;
-        font-weight: 600;
-        color: #2c3e50;
-        text-align: center;
-        line-height: 1.4;
+        margin-top: 12px; font-size: 16px; font-weight: 600;
+        color: #2c3e50; text-align: center; line-height: 1.4;
       }}
     </style>
   </head>
   <body>
+    <div id="toolbar">
+      <label>Clustering Method:</label>
+      <select id="method-selector">
+{options_html}
+      </select>
+    </div>
     <div id="plotly-div" style="width:100%;height:100vh;"></div>
     <div id="hover-tooltip">
       <img id="tooltip-img" src="" alt="Preview">
       <div class="info" id="tooltip-text"></div>
     </div>
     <script>
-      var fig = {fig_json};
-      Plotly.newPlot('plotly-div', fig.data, fig.layout, fig.config || {{}});
-      var images = {json.dumps(images_base64)};
-      var names = {json.dumps(image_names)};
-      var gd = document.getElementById('plotly-div');
-      var tooltip = document.getElementById('hover-tooltip');
-      var tooltipImg = document.getElementById('tooltip-img');
-      var tooltipText = document.getElementById('tooltip-text');
-      var lastMouseX = 0;
-      var lastMouseY = 0;
-      
-      // Track mouse position globally
-      document.addEventListener('mousemove', function(e) {{{{
-        lastMouseX = e.clientX;
-        lastMouseY = e.clientY;
-      }}}});
-      
-      // Hover to show tooltip with image preview
-      gd.on('plotly_hover', function(eventData) {{{{
-        try {{{{
-          var pt = eventData.points[0];
-          var idx = pt.customdata;
-          if (Array.isArray(idx)) idx = idx[0];
-          if (idx == null || idx >= images.length) return;
-          
-          var img = images[idx];
-          var name = names[idx] || 'Sample ' + idx;
-          var cluster = pt.fullData.name || 'Unknown';
-          
-          if (img) {{{{
-            tooltipImg.src = img;
-            tooltipText.innerHTML = '<b>' + name + '</b><br>' + cluster;
-            tooltip.style.display = 'block';
-            
-            // Position tooltip using tracked mouse position
-            var x = lastMouseX + 20;
-            var y = lastMouseY - 120;
-            
-            // Keep tooltip in viewport
-            if (x + 300 > window.innerWidth) {{{{
-              x = lastMouseX - 300;
-            }}}}
-            if (y < 0) {{{{
-              y = 10;
-            }}}}
-            if (y + 400 > window.innerHeight) {{{{
-              y = window.innerHeight - 420;
-            }}}}
-            
-            tooltip.style.left = x + 'px';
-            tooltip.style.top = y + 'px';
-          }}}}
-        }}}} catch (e) {{{{
-          console.error('Hover error', e);
-        }}}}
-      }}}});
-      
-      // Hide tooltip on unhover
-      gd.on('plotly_unhover', function() {{{{
-        tooltip.style.display = 'none';
-      }}}});
+{js_code}
     </script>
   </body>
-</html>
-"""
+</html>"""
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(html, encoding='utf-8')
-        logging.info(f"[OK] Interactive 3D {viz_method} saved to {output_path} (with click-to-open)")
-        return fig
+        logging.info(f"[OK] Interactive 3D {viz_method} saved to {output_path} (methods: {', '.join(method_names)})")
+        return True
     except ImportError:
-        logging.warning("Plotly not installed. Install with: pip install plotly")
+        logging.warning("Required libraries not installed (plotly, matplotlib).")
         return None
     except Exception as e:
         logging.warning(f"Failed to create interactive 3D visualization: {e}")

@@ -1119,7 +1119,6 @@ def clustering(config):
     archetype_latents = None
     archetype_names = None
     archetype_images = None
-    archetype_cluster_labels = None
     
     if archetypes_dir:
         logging.info(f"Loading archetypes from: {archetypes_dir}")
@@ -1129,22 +1128,81 @@ def clustering(config):
         if archetype_latents is not None:
             logging.info(f"Loaded {len(archetype_latents)} archetypes")
     
-    # Perform k-means clustering on full latent space
-    from sklearn.cluster import KMeans
-    logging.info(f"Performing k-means clustering (k={n_clusters})...")
+    # Perform clustering on full latent space (K-Means + GMM + DBSCAN)
+    from sklearn.cluster import KMeans, DBSCAN
+    from sklearn.mixture import GaussianMixture
+    from sklearn.preprocessing import StandardScaler
+
+    logging.info(f"Performing K-Means clustering (k={n_clusters})...")
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    cluster_labels = kmeans.fit_predict(latents)
-    
+    kmeans_labels = kmeans.fit_predict(latents)
+
+    logging.info(f"Performing GMM clustering (k={n_clusters})...")
+    gmm = GaussianMixture(n_components=n_clusters, random_state=42, covariance_type='full', n_init=3)
+    gmm_labels = gmm.fit_predict(latents)
+
+    # DBSCAN — auto-detect eps via nearest-neighbour heuristic
+    logging.info("Performing DBSCAN clustering...")
+    dbscan_cfg = cluster_config.get("dbscan", {})
+    dbscan_eps = dbscan_cfg.get("eps", None)
+    dbscan_min_samples = int(dbscan_cfg.get("min_samples", 5))
+
+    latents_scaled = StandardScaler().fit_transform(latents)
+    if dbscan_eps is None:
+        from sklearn.neighbors import NearestNeighbors
+        nn = NearestNeighbors(n_neighbors=dbscan_min_samples)
+        nn.fit(latents_scaled)
+        distances, _ = nn.kneighbors(latents_scaled)
+        dbscan_eps = float(np.percentile(distances[:, -1], 90))
+        logging.info(f"DBSCAN auto eps={dbscan_eps:.4f} (90th-percentile of {dbscan_min_samples}-NN distances)")
+
+    dbscan = DBSCAN(eps=dbscan_eps, min_samples=dbscan_min_samples)
+    dbscan_labels = dbscan.fit_predict(latents_scaled)
+    # Remap noise label (-1) to its own cluster id so every point has a colour
+    if np.any(dbscan_labels == -1):
+        noise_label = dbscan_labels.max() + 1
+        dbscan_labels[dbscan_labels == -1] = noise_label
+    dbscan_n_clusters = int(dbscan_labels.max() + 1)
+    logging.info(f"DBSCAN found {dbscan_n_clusters} clusters (eps={dbscan_eps:.4f}, min_samples={dbscan_min_samples})")
+
     # Assign archetypes to clusters if available
+    kmeans_archetype_labels = None
+    gmm_archetype_labels = None
+    dbscan_archetype_labels = None
     if archetype_latents is not None:
-        archetype_cluster_labels = kmeans.predict(archetype_latents)
+        kmeans_archetype_labels = kmeans.predict(archetype_latents)
+        gmm_archetype_labels = gmm.predict(archetype_latents)
+        # DBSCAN has no predict(); assign each archetype to its nearest cluster centroid
+        from sklearn.neighbors import NearestNeighbors
+        archetype_scaled = StandardScaler().fit_transform(
+            np.vstack([latents, archetype_latents])
+        )[len(latents):]  # scale with same distribution
+        nn_db = NearestNeighbors(n_neighbors=1).fit(latents_scaled)
+        _, nn_idx = nn_db.kneighbors(archetype_scaled)
+        dbscan_archetype_labels = dbscan_labels[nn_idx.flatten()]
+
+    # Build clustering_results dict for the interactive visualization
+    clustering_results = {
+        "K-Means": {
+            "labels": kmeans_labels,
+            "archetype_labels": kmeans_archetype_labels,
+            "n_clusters": n_clusters,
+        },
+        "GMM": {
+            "labels": gmm_labels,
+            "archetype_labels": gmm_archetype_labels,
+            "n_clusters": n_clusters,
+        },
+        "DBSCAN": {
+            "labels": dbscan_labels,
+            "archetype_labels": dbscan_archetype_labels,
+            "n_clusters": dbscan_n_clusters,
+        },
+    }
     
     # Generate visualizations
     from sklearn.decomposition import PCA
     import matplotlib.pyplot as plt
-    import matplotlib.cm as cm
-    
-    colors = cm.tab20(np.linspace(0, 1, n_clusters))
     
     # Determine which visualizations to generate
     viz_methods = []
@@ -1199,17 +1257,14 @@ def clustering(config):
         
         vizualisation.create_interactive_3d_visualization(
             z_embedded_3d=z_embedded,
-            cluster_labels=cluster_labels,
+            clustering_results=clustering_results,
             archetype_embedded=archetype_embedded,
             archetype_names=archetype_names if archetype_names else [],
-            archetype_cluster_labels=archetype_cluster_labels,
             train_images=images,
-            train_image_names=image_names,  # Pass real filenames
-            archetype_images=archetype_images,  # Pass archetype images
-            colors=colors,
-            k=n_clusters,
+            train_image_names=image_names,
+            archetype_images=archetype_images,
             viz_method=method.upper(),
-            epoch=0,  # Not applicable for standalone clustering
+            epoch=0,
             n_samples=n_samples,
             latent_dim=latent_dim,
             output_path=output_path
