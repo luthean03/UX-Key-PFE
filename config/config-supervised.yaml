@@ -65,17 +65,18 @@ loss:
 optim:
   algo: "AdamW"
   params:
-    lr: 0.0003                   # Initial learning rate
+    lr: 0.0003                   # Peak learning rate (used as max_lr by OneCycleLR)
     weight_decay: 0.0001         # L2 regularization
   
   # Learning rate scheduler
   scheduler:
-    name: "CosineAnnealingWarmRestarts"
+    name: "OneCycleLR"           # Warmup + Cosine Decay (steps per batch)
     params:
-      T_0: 15                    # Restart every 100 epochs
-      T_mult: 2                  # Double period after each restart
-      eta_min: 1e-6               # Minimum learning rate
-      verbose: true
+      max_lr: 0.0003             # Peak LR (should match optim.params.lr)
+      pct_start: 0.3             # 30% of training is warmup
+      div_factor: 25.0           # initial_lr = max_lr / 25 = 1.2e-5
+      final_div_factor: 10000.0  # min_lr = initial_lr / 10000 = 1.2e-9
+      anneal_strategy: "cos"     # Cosine annealing after warmup
 
 # Training optimization
 # Note: lr and weight_decay are defined in optim.params

@@ -141,7 +141,9 @@ def train(config):
     optim_config = config["optim"]
     optimizer = optim.get_optimizer(optim_config, model.parameters())
 
-    scheduler = optim.get_scheduler(optimizer, optim_config)
+    # Scheduler (created later for OneCycleLR which needs steps_per_epoch)
+    scheduler = None
+    _sched_deferred = True  # resolved once we know len(train_loader)
 
     # Logdir
     logging_config = config["logging"]
@@ -226,6 +228,23 @@ def train(config):
     # SSIM metric (instantiated once, reused every epoch)
     ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
 
+    # Deferred scheduler creation (needs len(train_loader) for OneCycleLR)
+    if _sched_deferred:
+        _accum = int(config.get("optimization", {}).get(
+            "accumulation_steps", config.get("grad_accumulation_steps", 64)))
+        _steps_per_epoch = max(1, len(train_loader) // _accum)
+        scheduler = optim.get_scheduler(
+            optimizer, optim_config,
+            steps_per_epoch=_steps_per_epoch,
+            epochs=config["nepochs"],
+        )
+        _is_batch_scheduler = isinstance(
+            scheduler, torch.optim.lr_scheduler.OneCycleLR
+        ) if scheduler is not None else False
+        if _is_batch_scheduler:
+            logging.info("Scheduler will step every optimizer update (per-batch).")
+        _sched_deferred = False
+
     optimizer.zero_grad()
     for e in range(config["nepochs"]):
         # KL annealing
@@ -290,6 +309,11 @@ def train(config):
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
                     optimizer.step()
                     optimizer.zero_grad()
+
+                # Per-batch scheduler step (OneCycleLR)
+                if _is_batch_scheduler and scheduler is not None:
+                    scheduler.step()
+
                 try:
                     pbar.set_postfix(loss=f"{total_loss.detach().item():.4f}", beta=f"{current_beta:.4f}")
                 except Exception:
@@ -313,6 +337,10 @@ def train(config):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
                 optimizer.step()
                 optimizer.zero_grad()
+
+            # Per-batch scheduler step for the residual accumulation block
+            if _is_batch_scheduler and scheduler is not None:
+                scheduler.step()
 
         train_loss = train_total / max(1, train_samples)
 
@@ -362,7 +390,7 @@ def train(config):
                 except Exception:
                     pass
 
-        if scheduler is not None:
+        if scheduler is not None and not _is_batch_scheduler:
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(test_loss)
             else:
