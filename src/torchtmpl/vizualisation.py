@@ -417,26 +417,44 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
     from sklearn.cluster import KMeans
     import base64
     from io import BytesIO
+    from tqdm import tqdm
     
     # 1. Encode the validation dataset
-    logging.info(f"Encoding full validation dataset...")
+    # We encode ALL samples for clustering quality, but only store image tensors
+    # for a random subset (max_samples) used in visualization, to save RAM and time.
+    n_batches = len(valid_loader)
+    total_dataset_size = len(valid_loader.dataset) if hasattr(valid_loader, 'dataset') else n_batches * valid_loader.batch_size
+    logging.info(f"Encoding validation dataset ({total_dataset_size} images, {n_batches} batches)...")
+    
+    # Pre-select which global sample indices to keep images for
+    rng = np.random.RandomState(42)
+    if total_dataset_size > max_samples:
+        keep_image_indices = set(rng.choice(total_dataset_size, size=max_samples, replace=False).tolist())
+    else:
+        keep_image_indices = None  # keep all
+    
     model.eval()
     valid_latents = []
-    valid_indices = []
-    valid_images = []
+    valid_images_sparse = {}  # idx -> tensor, only for selected samples
+    global_idx = 0
 
+    use_amp = device.type == "cuda"
     with torch.inference_mode():
-        for i, (inputs, targets, masks) in enumerate(valid_loader):
-            # Encode clean targets (not augmented/noisy versions)
+        for i, (inputs, targets, masks) in enumerate(tqdm(valid_loader, desc="Encoding validation", leave=False)):
             targets = targets.to(device)
             masks = masks.to(device)
-            _, mu, _ = model(targets, mask=masks)
+            if use_amp:
+                with torch.amp.autocast("cuda"):
+                    _, mu, _ = model(targets, mask=masks)
+            else:
+                _, mu, _ = model(targets, mask=masks)
             valid_latents.append(mu.cpu().numpy())
-            valid_indices.append(i)
-            # Store all images from batch
-            for j in range(targets.size(0)):
-                img_tensor = targets[j].cpu()  # (1, H, W)
-                valid_images.append(img_tensor)
+            # Only store images we'll actually use for visualization
+            batch_size = targets.size(0)
+            for j in range(batch_size):
+                if keep_image_indices is None or (global_idx + j) in keep_image_indices:
+                    valid_images_sparse[global_idx + j] = targets[j].cpu()
+            global_idx += batch_size
     
     if len(valid_latents) == 0:
         logging.warning("No validation samples encoded, skipping visualization")
@@ -447,15 +465,7 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
     n_total = len(valid_latents)
 
     logging.info(f"Encoded {n_total} validation samples (latent_dim={latent_dim})")
-    logging.info(f"Collected {len(valid_images)} images for visualization")
-    
-    # Verify that we have the same number of latents and images
-    if len(valid_images) != n_total:
-        logging.warning(f"Mismatch: {n_total} latents but {len(valid_images)} images. Truncating to minimum.")
-        min_len = min(n_total, len(valid_images))
-        valid_latents = valid_latents[:min_len]
-        valid_images = valid_images[:min_len]
-        n_total = min_len
+    logging.info(f"Stored {len(valid_images_sparse)} images for visualization (max_samples={max_samples})")
     
     # 2. Load archetypes to determine k
     archetype_latents, archetype_labels, archetype_names, archetype_images = load_archetypes(archetypes_dir, model, device, max_height)
@@ -499,19 +509,22 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                 logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
     
     # 5. Subsample for visualization (clustering already done on full dataset)
+    # Use the same indices we pre-selected for image storage
     if n_total > max_samples:
-        logging.info(f"Subsampling {max_samples} points out of {n_total} for visualization (clustering was on all {n_total})...")
-        rng = np.random.RandomState(42)
-        viz_indices = rng.choice(n_total, size=max_samples, replace=False)
-        viz_indices.sort()
+        viz_indices = sorted(valid_images_sparse.keys())
+        # In case some images failed to load, limit to what we actually have
+        viz_indices = [i for i in viz_indices if i < n_total][:max_samples]
+        logging.info(f"Subsampling {len(viz_indices)} points out of {n_total} for visualization (clustering was on all {n_total})...")
+        viz_indices = np.array(viz_indices)
         viz_latents = valid_latents[viz_indices]
         viz_cluster_labels = valid_cluster_labels_full[viz_indices]
-        viz_images = [valid_images[i] for i in viz_indices]
-        n_samples = max_samples
+        viz_images = [valid_images_sparse[i] for i in viz_indices]
+        n_samples = len(viz_indices)
     else:
         viz_latents = valid_latents
         viz_cluster_labels = valid_cluster_labels_full
-        viz_images = valid_images
+        # Build ordered list from sparse dict
+        viz_images = [valid_images_sparse[i] for i in sorted(valid_images_sparse.keys()) if i < n_total]
         n_samples = n_total
 
     logging.info(f"Visualization will display {n_samples} points (clustered on {n_total})")
