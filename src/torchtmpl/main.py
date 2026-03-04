@@ -132,13 +132,8 @@ def train(config):
         else:
             logging.warning(f"Checkpoint file not found: {resume_path}")
 
-    # Compile model for speed (PyTorch 2.x) — dynamic=True handles variable input sizes
-    if use_cuda and hasattr(torch, "compile"):
-        try:
-            model = torch.compile(model, dynamic=True)
-            logging.info("Model compiled with torch.compile(dynamic=True)")
-        except Exception as e:
-            logging.warning(f"torch.compile failed, falling back to eager mode: {e}")
+    # NOTE: torch.compile is intentionally NOT used here.
+    # Variable-size inputs cause constant recompilation, making it slower.
 
     # Loss
     logging.info("= Loss")
