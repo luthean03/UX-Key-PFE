@@ -8,7 +8,7 @@ data:
   valid_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"
   archetypes_dir: "dataset_supervised/archetypes_pc/png_scaled"  # Labeled wireframes for latent metrics
   batch_size: 4                    # SmartBatchSampler groups similar-sized images to minimize padding
-  num_workers: 6                   # I/O parallelization (reduced for RAM)
+  num_workers: 8                   # I/O parallelization (reduced for RAM)
   seed: 42                          # Reproducibility
   
   # Memory management
