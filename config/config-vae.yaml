@@ -12,7 +12,7 @@ data:
   seed: 42                          # Reproducibility
   
   # Memory management
-  max_height: 3000                  # Maximum height
+  max_height: 2048                  # Maximum height
   
   # Denoising augmentation
   noise_level: 0.15                 # Gaussian noise (0.20 was aggressive, risks blurring fine lines)
@@ -90,8 +90,8 @@ logging:
   log_loss_components: true      # Log SSIM/gradient/KLD separately
   save_reconstructions_every: 5
   latent_visualization:
-    frequency: 20                # t-SNE visualization every 20 epochs
-    max_samples: 500
+    frequency: 50                # t-SNE visualization every 20 epochs
+    max_samples: 100
 
 # Training configuration
 nepochs: 100
