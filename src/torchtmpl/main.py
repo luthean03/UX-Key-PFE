@@ -104,7 +104,7 @@ from . import loss as loss_module
 from . import models
 from . import optim
 from . import utils
-from . import latent_metrics
+from . import vizualisation
 
 
 def _setup_wandb(config: dict):
@@ -621,7 +621,7 @@ def train(config):
                     archetypes_dir = data_config.get('archetypes_dir')
                     if archetypes_dir and pathlib.Path(archetypes_dir).exists() and writer is not None:
                         logging.info(f"Computing latent space metrics (epoch {e}) from {archetypes_dir} (max_samples={tsne_max_samples})...")
-                        latent_metrics.log_latent_space_visualization(
+                        vizualisation.log_latent_space_visualization(
                             model, valid_loader, archetypes_dir, device, writer, e, max_samples=tsne_max_samples
                         )
                     elif not archetypes_dir:
@@ -1123,7 +1123,7 @@ def clustering(config):
     
     if archetypes_dir:
         logging.info(f"Loading archetypes from: {archetypes_dir}")
-        archetype_latents, _, archetype_names, archetype_images = latent_metrics.load_archetypes(
+        archetype_latents, _, archetype_names, archetype_images = vizualisation.load_archetypes(
             archetypes_dir, model, device, max_height=2048
         )
         if archetype_latents is not None:
@@ -1138,10 +1138,6 @@ def clustering(config):
     # Assign archetypes to clusters if available
     if archetype_latents is not None:
         archetype_cluster_labels = kmeans.predict(archetype_latents)
-    
-    # Compute cluster metrics
-    cluster_metrics = latent_metrics.compute_cluster_metrics(latents, cluster_labels)
-    logging.info(f"Cluster metrics: {cluster_metrics}")
     
     # Generate visualizations
     from sklearn.decomposition import PCA
@@ -1201,7 +1197,7 @@ def clustering(config):
         output_filename = f"clustering_{method}_interactive.html"
         output_path = pathlib.Path(output_dir) / output_filename
         
-        latent_metrics.create_interactive_3d_visualization(
+        vizualisation.create_interactive_3d_visualization(
             z_embedded_3d=z_embedded,
             cluster_labels=cluster_labels,
             archetype_embedded=archetype_embedded,
