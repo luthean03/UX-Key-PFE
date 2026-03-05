@@ -89,9 +89,6 @@ logging:
   tensorboard: true
   log_loss_components: true      # Log SSIM/gradient/KLD separately
   save_reconstructions_every: 5
-  latent_visualization:
-    frequency: 50                # t-SNE visualization every 20 epochs
-    max_samples: 100
 
 # Training configuration
 nepochs: 100
