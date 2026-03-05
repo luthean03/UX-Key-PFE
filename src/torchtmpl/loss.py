@@ -93,116 +93,13 @@ class SimpleVAELoss(nn.Module):
         total = recon_loss + self.beta * kld_loss
 
         return total, recon_loss, kld_loss
-    
-def gaussian_kernel(size: int, sigma: float, device: torch.device) -> torch.Tensor:
-    """Create a 2D Gaussian kernel."""
-    coords = torch.arange(size, dtype=torch.float32, device=device)
-    coords -= size // 2
-    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
-    g /= g.sum()
-    return g.outer(g)
-
-
-class SSIMLoss(nn.Module):
-    """Structural Similarity Index loss (1 - SSIM)."""
-    
-    def __init__(self, window_size: int = 11, sigma: float = 1.5, 
-                 data_range: float = 1.0, size_average: bool = True):
-        super().__init__()
-        self.window_size = window_size
-        self.sigma = sigma
-        self.data_range = data_range
-        self.size_average = size_average
-        self.C1 = (0.01 * data_range) ** 2
-        self.C2 = (0.03 * data_range) ** 2
-        
-        self.register_buffer('window', None)
-
-    def _get_window(self, channels: int, device: torch.device) -> torch.Tensor:
-        if self.window is None or self.window.device != device:
-            kernel = gaussian_kernel(self.window_size, self.sigma, device)
-            window = kernel.unsqueeze(0).unsqueeze(0)
-            window = window.expand(channels, 1, -1, -1).contiguous()
-            self.window = window
-        return self.window
-    
-    def forward(self, pred: torch.Tensor, target: torch.Tensor,
-                mask: torch.Tensor = None) -> torch.Tensor:
-        channels = pred.shape[1]
-        window = self._get_window(channels, pred.device)
-
-        if mask is not None:
-            pred = pred * mask
-            target = target * mask
-        
-        pad = self.window_size // 2
-        mu1 = F.conv2d(pred, window, padding=pad, groups=channels)
-        mu2 = F.conv2d(target, window, padding=pad, groups=channels)
-
-        mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
-
-        sigma1_sq = F.conv2d(pred * pred, window, padding=pad, groups=channels) - mu1_sq
-        sigma2_sq = F.conv2d(target * target, window, padding=pad, groups=channels) - mu2_sq
-        sigma12 = F.conv2d(pred * target, window, padding=pad, groups=channels) - mu1_mu2
-
-        ssim_map = ((2 * mu1_mu2 + self.C1) * (2 * sigma12 + self.C2)) / \
-                   ((mu1_sq + mu2_sq + self.C1) * (sigma1_sq + sigma2_sq + self.C2))
-
-        if mask is not None:
-            mask_small = F.interpolate(mask, size=ssim_map.shape[2:], mode='nearest')
-            ssim_map = ssim_map * mask_small
-            return 1 - ssim_map.sum() / (mask_small.sum() + 1e-8)
-        if self.size_average:
-            return 1 - ssim_map.mean()
-        return 1 - ssim_map.sum()
-    
-class PerceptualVAELoss(nn.Module):
-    """VAE loss combining L1 + SSIM + gradient + multi-scale + KLD."""
-    
-    def __init__(self, beta: float = 1.0,
-                 lambda_l1: float = 1.0,
-                 lambda_ssim: float = 0.5,
-                 lambda_gradient: float = 0.1,
-                 lambda_multiscale: float = 0.2,
-                 use_multiscale: bool = True,
-                 scale: float = 1.0):
-        super().__init__()
-        self.beta = beta
-        self.lambda_l1 = lambda_l1
-        self.lambda_ssim = lambda_ssim
-        self.lambda_gradient = lambda_gradient
-        self.lambda_multiscale = lambda_multiscale
-        self.use_multiscale = use_multiscale
-        self.scale = scale
-        self.ssim_loss = SSIMLoss()
-        self.gradient_loss = GradientLoss()
-        if use_multiscale:
-            self.multiscale_loss = MultiScaleLoss(scales=[1.0, 0.5, 0.25])
-    
-    def forward(self, recon_x, x, mu, logvar, mask=None):
-        if mask is not None:
-            l1_loss = (torch.abs(recon_x - x) * mask).sum()
-        else:
-            l1_loss = F.l1_loss(recon_x, x, reduction='sum')
-        ssim_val = self.ssim_loss(recon_x, x, mask)
-        grad_val = self.gradient_loss(recon_x, x, mask)
-        ms_val = self.multiscale_loss(recon_x, x, mask) if self.use_multiscale else 0.0
-
-        recon_loss = (self.lambda_l1 * l1_loss
-                      + self.lambda_ssim * ssim_val * l1_loss.detach()
-                      + self.lambda_gradient * grad_val
-                      + self.lambda_multiscale * ms_val)
-        kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
-        kld_loss = kld_per_sample.mean()
-        total = (recon_loss + self.beta * kld_loss) * self.scale
-        return total, recon_loss, kld_loss
 
 
 def get_vae_loss(loss_config: dict) -> nn.Module:
     """Instantiate a VAE loss module from a config dict.
 
     Recognised keys:
-        name: ``'l1'`` | ``'mse'`` | ``'perceptual'``
+        name: ``'l1'`` | ``'mse'``
         beta_kld: float -- weight for the KL divergence term.
     """
     name = loss_config.get('name', 'l1').lower()
@@ -211,16 +108,4 @@ def get_vae_loss(loss_config: dict) -> nn.Module:
     if name in ('l1', 'mse'):
         return SimpleVAELoss(mode=name, beta=beta)
     
-    if name == 'perceptual':
-        scale = float(loss_config.get('loss_scale', 1.0))
-        return PerceptualVAELoss(
-            beta=beta,
-            lambda_l1=loss_config.get('lambda_l1', 1.0),
-            lambda_ssim=loss_config.get('lambda_ssim', 0.5),
-            lambda_gradient=loss_config.get('lambda_gradient', 0.1),
-            lambda_multiscale=loss_config.get('lambda_multiscale', 0.2),
-            use_multiscale=loss_config.get('use_multiscale', True),
-            scale=scale
-        )
-    
-    raise ValueError(f"Unknown loss name: {name}. Use 'l1', 'mse', or 'perceptual'.")
+    raise ValueError(f"Unknown loss name: {name}. Use 'l1' or 'mse'.")

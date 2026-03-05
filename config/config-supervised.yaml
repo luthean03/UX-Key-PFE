@@ -51,15 +51,8 @@ model:
 # the latent regularisation kicks in.
 loss:
   name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 0.005                # Balanced for 64-dim latent
-  warmup_epochs: 20              # 13% of 150 epochs — reconstruction-first strategy
-  
-  # Component weights (only used when name='perceptual')
-  lambda_l1: 1.0                 # Pixel accuracy
-  lambda_ssim: 0.5               # Structural similarity
-  lambda_gradient: 0.1           # Edge preservation
-  lambda_multiscale: 0.2         # Multi-scale hierarchical features
-  use_multiscale: true           # Enable multi-scale loss
+  beta_kld: 0.0001                # Balanced for 64-dim latent
+  warmup_epochs: 40              # 13% of 150 epochs — reconstruction-first strategy
 
 # Optimizer configuration
 optim:
@@ -97,15 +90,15 @@ nepochs: 150                      # More epochs for small dataset (OneCycleLR ad
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml test
 test:
   test_input_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"          # Directory containing test images
-  test_output_dir: "test/test_output"        # Output directory for comparison grids
+  test_output_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/test"        # Output directory for comparison grids
   model_path: "logs/VAE_6/last_model.pt"     # Path to trained model checkpoint
 
 # Interpolation configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml interpolate
 interpolate:
-  image1_path: "dataset/vae_dataset_pc/png_scaled/validation/wireframe_2925866.png"  # First image path
-  image2_path: "dataset/vae_dataset_pc/png_scaled/validation/wireframe_3015001.png"  # Second image path
-  output_dir: "test/interpolate_output"            # Output directory for interpolation grid
+  image1_path: "dataset_supervised/dataset_supervised_pc/png_scaled/validation/wireframe_2925866.png"  # First image path
+  image2_path: "dataset_supervised/dataset_supervised_pc/png_scaled/validation/wireframe_3015001.png"  # Second image path
+  output_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/interpolate_output"            # Output directory for interpolation grid
   num_steps: 10                                     # Number of interpolation steps
   model_path: "logs/VAE_6/last_model.pt"           # Path to trained model checkpoint
 

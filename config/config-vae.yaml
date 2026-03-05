@@ -51,15 +51,8 @@ model:
 # the latent regularisation kicks in.
 loss:
   name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 0.003                # Slightly lower for 128-dim latent (more KL pressure per dim)
-  warmup_epochs: 25              # 25% of training — lets reconstruction stabilise first
-  
-  # Component weights (only used when name='perceptual')
-  lambda_l1: 1.0                 # Pixel accuracy
-  lambda_ssim: 0.5               # Structural similarity
-  lambda_gradient: 0.1           # Edge preservation
-  lambda_multiscale: 0.2         # Multi-scale hierarchical features
-  use_multiscale: true           # Enable multi-scale loss
+  beta_kld: 0.0001                # Slightly lower for 128-dim latent (more KL pressure per dim)
+  warmup_epochs: 40              # 25% of training — lets reconstruction stabilise first
 
 # Optimizer configuration
 optim:
