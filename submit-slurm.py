@@ -19,6 +19,7 @@ def makejob(commit_id, config_b64, nruns, command, data_src, archetypes_src, ext
 #SBATCH --time=48:00:00
 #SBATCH --output=logslurms/slurm-%A_%a.out
 #SBATCH --error=logslurms/slurm-%A_%a.err
+#SBATCH --exclude={exclude_list}
 #SBATCH --array=1-{nruns}
 
 current_dir=`pwd`
