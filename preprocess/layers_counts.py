@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
 import matplotlib.pyplot as plt
 
-INPUT_FOLDER = "./dataset_supervised/dataset_supervised_pc/json"
+INPUT_FOLDER = "./dataset/samir_lom"
 MAX_WORKERS = min(8, multiprocessing.cpu_count() * 2)
 
 
@@ -171,3 +171,17 @@ def analyze_dataset():
 
 if __name__ == "__main__":
     analyze_dataset()
+
+# Fichiers JSON trouvés : 108100
+# Analyse des profondeurs: 100%|██████████████████████████████████████████████████████████████| 108100/108100 [1:42:34<00:00, 17.57it/s]
+# 
+# === ANALYSE DE LA PROFONDEUR DES WIREFRAMES ===
+# Fichiers valides       : 107931 / 108100
+# Profondeur moyenne     : 29.19 couches
+# Médiane (50%)          : 30 couches
+# 90ème percentile       : 33 couches
+# 95ème percentile       : 34 couches
+# 99ème percentile (rec) : 39 couches  <-- Valeur recommandée pour GLOBAL_MAX_LAYERS
+# Maximum absolu         : 63 couches
+# 
+# >>> Recommandation : fixer GLOBAL_MAX_LAYERS = 39

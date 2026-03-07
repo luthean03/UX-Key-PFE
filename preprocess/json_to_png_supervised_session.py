@@ -27,6 +27,9 @@ JSON_PHONE_FOLDER = "./dataset_supervised/dataset_supervised_phone/json"
 
 MAX_WORKERS = min(8, multiprocessing.cpu_count() * 2)
 
+# --- NOUVEAU : Plafond absolu pour la normalisation de la vérité terrain ---
+GLOBAL_MAX_LAYERS = 40.0
+
 
 def ensure_folder_exists(folder_path):
     os.makedirs(folder_path, exist_ok=True)
@@ -156,8 +159,14 @@ def render_lom_to_png(root_node, w_canvas, h_canvas, output_path):
     if local_max == 0:
         return False, "Max value is 0"
 
-    normalized_img = cropped_heatmap / local_max
+    # --- CORRECTION DE LA NORMALISATION ICI ---
+    # 1. On écrête (clip) à la limite globale définie (40.0)
+    clipped_heatmap = np.clip(cropped_heatmap, 0, GLOBAL_MAX_LAYERS)
+    
+    # 2. On divise TOUJOURS par la constante globale
+    normalized_img = clipped_heatmap / GLOBAL_MAX_LAYERS
     final_img_uint8 = (normalized_img * 255.0).astype(np.uint8)
+    # ------------------------------------------
 
     Image.fromarray(final_img_uint8, mode='L').save(output_path)
     return True, rows_cropped
@@ -239,6 +248,7 @@ def main():
 
     print(f"Found {len(files)} session JSON files...")
     print(f"Using {MAX_WORKERS} workers")
+    print(f"Global Normalization: Maximum layers set to {GLOBAL_MAX_LAYERS}")
     print(f"PNG  -> pc: {PNG_PC_FOLDER}  |  phone: {PNG_PHONE_FOLDER}")
     print(f"JSON -> pc: {JSON_PC_FOLDER}  |  phone: {JSON_PHONE_FOLDER}")
 
