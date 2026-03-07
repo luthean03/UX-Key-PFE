@@ -8,24 +8,24 @@ are sorted into phone/ and pc/ subdirectories accordingly.
 
 import json
 import os
-import shutil
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
-INPUT_FOLDER = "./eatennaturallyfell/sessions/daily_zip/2026/2026-02-16"
+# Input JSON folders (already sorted from a previous run)
+JSON_PC_FOLDER = "./dataset_supervised/dataset_supervised_pc/json"
+JSON_PHONE_FOLDER = "./dataset_supervised/dataset_supervised_phone/json"
 
 # Output folders for PNGs
 PNG_PC_FOLDER = "./dataset_supervised/dataset_supervised_pc/png"
 PNG_PHONE_FOLDER = "./dataset_supervised/dataset_supervised_phone/png"
 
-# Output folders for sorted JSONs
-JSON_PC_FOLDER = "./dataset_supervised/dataset_supervised_pc/json"
-JSON_PHONE_FOLDER = "./dataset_supervised/dataset_supervised_phone/json"
-
 MAX_WORKERS = min(8, multiprocessing.cpu_count() * 2)
+
+# --- NOUVEAU : Plafond absolu pour la normalisation de la vérité terrain ---
+GLOBAL_MAX_LAYERS = 40.0
 
 
 def ensure_folder_exists(folder_path):
@@ -156,19 +156,23 @@ def render_lom_to_png(root_node, w_canvas, h_canvas, output_path):
     if local_max == 0:
         return False, "Max value is 0"
 
-    normalized_img = cropped_heatmap / local_max
+    # --- CORRECTION DE LA NORMALISATION ICI ---
+    # 1. On écrête (clip) à la limite globale définie (40.0)
+    clipped_heatmap = np.clip(cropped_heatmap, 0, GLOBAL_MAX_LAYERS)
+    
+    # 2. On divise TOUJOURS par la constante globale
+    normalized_img = clipped_heatmap / GLOBAL_MAX_LAYERS
     final_img_uint8 = (normalized_img * 255.0).astype(np.uint8)
+    # ------------------------------------------
 
     Image.fromarray(final_img_uint8, mode='L').save(output_path)
     return True, rows_cropped
 
 
-def process_session(file_path, png_pc_dir, png_phone_dir, json_pc_dir, json_phone_dir):
+def process_session(file_path, png_dir):
     """
-    Process a single session JSON file.
-    Extracts all LOMs, renders each to a PNG, and sorts outputs
-    into the appropriate pc or phone directories based on isMobile.
-    Also copies the input JSON into the corresponding JSON folder.
+    Process a single session JSON file from an already-sorted JSON folder.
+    Extracts all LOMs and renders each to a PNG in png_dir.
 
     Returns (num_success, num_failed, errors_list).
     """
@@ -182,13 +186,6 @@ def process_session(file_path, png_pc_dir, png_phone_dir, json_pc_dir, json_phon
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-
-        is_mobile = data.get('isMobile', False)
-        png_dir = png_phone_dir if is_mobile else png_pc_dir
-        json_dir = json_phone_dir if is_mobile else json_pc_dir
-
-        # Copy the input JSON into the sorted folder
-        shutil.copy2(file_path, os.path.join(json_dir, filename))
 
         # Extract LOMs
         loms = data.get('loms', {})
@@ -228,36 +225,35 @@ def process_session(file_path, png_pc_dir, png_phone_dir, json_pc_dir, json_phon
 
 
 def main():
-    # Create all output directories
-    for d in (PNG_PC_FOLDER, PNG_PHONE_FOLDER, JSON_PC_FOLDER, JSON_PHONE_FOLDER):
+    # Create output PNG directories
+    for d in (PNG_PC_FOLDER, PNG_PHONE_FOLDER):
         ensure_folder_exists(d)
 
-    files = [
-        f for f in os.listdir(INPUT_FOLDER)
-        if f.endswith('.json') and f != 'manifest.json'
-    ]
+    # Collect tasks: (file_path, png_dir) from both already-sorted JSON folders
+    tasks = []
+    for json_dir, png_dir in [(JSON_PC_FOLDER, PNG_PC_FOLDER), (JSON_PHONE_FOLDER, PNG_PHONE_FOLDER)]:
+        if os.path.isdir(json_dir):
+            for f in os.listdir(json_dir):
+                if f.endswith('.json') and f != 'manifest.json':
+                    tasks.append((os.path.join(json_dir, f), png_dir))
 
-    print(f"Found {len(files)} session JSON files...")
+    print(f"Found {len(tasks)} session JSON files (from sorted pc/phone folders)...")
     print(f"Using {MAX_WORKERS} workers")
-    print(f"PNG  -> pc: {PNG_PC_FOLDER}  |  phone: {PNG_PHONE_FOLDER}")
-    print(f"JSON -> pc: {JSON_PC_FOLDER}  |  phone: {JSON_PHONE_FOLDER}")
+    print(f"Global Normalization: Maximum layers set to {GLOBAL_MAX_LAYERS}")
+    print(f"JSON pc: {JSON_PC_FOLDER}  |  phone: {JSON_PHONE_FOLDER}")
+    print(f"PNG  pc: {PNG_PC_FOLDER}  |  phone: {PNG_PHONE_FOLDER}")
 
     total_success = 0
     total_failed = 0
     all_errors = []
 
-    file_paths = [
-        (os.path.join(INPUT_FOLDER, f), PNG_PC_FOLDER, PNG_PHONE_FOLDER, JSON_PC_FOLDER, JSON_PHONE_FOLDER)
-        for f in files
-    ]
-
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_file = {
-            executor.submit(process_session, *fp): os.path.basename(fp[0])
-            for fp in file_paths
+            executor.submit(process_session, file_path, png_dir): os.path.basename(file_path)
+            for file_path, png_dir in tasks
         }
 
-        with tqdm(total=len(files), unit="session") as pbar:
+        with tqdm(total=len(tasks), unit="session") as pbar:
             for future in as_completed(future_to_file):
                 filename = future_to_file[future]
                 try:
@@ -273,7 +269,7 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"Done. PNG success: {total_success}, PNG failed: {total_failed}")
-    print(f"Sessions: {len(files)}")
+    print(f"Sessions: {len(tasks)}")
 
     # Count output files per category
     for label, png_d, json_d in [("pc", PNG_PC_FOLDER, JSON_PC_FOLDER), ("phone", PNG_PHONE_FOLDER, JSON_PHONE_FOLDER)]:

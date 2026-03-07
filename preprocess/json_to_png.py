@@ -8,14 +8,18 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
-INPUT_FOLDER = "./dataset/vae_dataset/json"
-
+INPUT_FOLDER = "./dataset/vae_dataset"
 OUTPUT_FOLDER = "dataset/vae_dataset/png"
 MAX_WORKERS = min(8, multiprocessing.cpu_count() * 2)
+
+# --- NOUVEAU : Plafond absolu pour la normalisation de la vérité terrain ---
+GLOBAL_MAX_LAYERS = 40.0
+
 
 def ensure_folder_exists(folder_path):
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
+
 
 def get_node_geometry(node):
     """
@@ -34,12 +38,14 @@ def get_node_geometry(node):
         return (int(b[0]), int(b[1]), int(b[2]), int(b[3]))
     return None
 
+
 def get_node_children(node):
     if 'children' in node:
         return node['children']
     elif 'c' in node:
         return node['c']
     return []
+
 
 def find_min_y_coord(node, abs_y, current_min_y):
     """
@@ -58,6 +64,7 @@ def find_min_y_coord(node, abs_y, current_min_y):
         current_min_y = find_min_y_coord(child, node_y, current_min_y)
         
     return current_min_y
+
 
 def paint_additive_recursive(node, canvas, parent_x, parent_y, width, height):
     """
@@ -159,8 +166,14 @@ def process_file(file_path, output_dir):
         if local_max == 0:
             return False, "Max value is 0"
 
-        normalized_img = cropped_heatmap / local_max
+        # --- CORRECTION DE LA NORMALISATION ICI ---
+        # 1. On écrête (clip) à la limite globale définie (40.0)
+        clipped_heatmap = np.clip(cropped_heatmap, 0, GLOBAL_MAX_LAYERS)
+        
+        # 2. On divise TOUJOURS par la constante globale pour conserver le même contraste
+        normalized_img = clipped_heatmap / GLOBAL_MAX_LAYERS
         final_img_uint8 = (normalized_img * 255.0).astype(np.uint8)
+        # ------------------------------------------
 
         # Append '-None' suffix for purely numeric filenames (no letters)
         name_lower = name_without_ext.lower()
@@ -183,13 +196,13 @@ def process_file(file_path, output_dir):
         return False, f"Error {filename}: {e}"
 
 
-
 def main():
     ensure_folder_exists(OUTPUT_FOLDER)
     files = [f for f in os.listdir(INPUT_FOLDER) if f.endswith('.json')]
     
     print(f"Found {len(files)} JSON files...")
     print(f"Using {MAX_WORKERS} workers")
+    print(f"Global Normalization: Maximum layers set to {GLOBAL_MAX_LAYERS}")
     
     successful = 0
     failed = 0
