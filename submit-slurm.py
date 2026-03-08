@@ -34,7 +34,7 @@ date
 mkdir -p $TMPDIR/code
 
 # Copy source code to local node for fast I/O (exclude heavy logs/datasets)
-rsync -r --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude 'vae_dataset*' . $TMPDIR/code
+rsync -r --exclude venv --exclude logslurms --exclude configs --exclude archetypes --exclude samir_lom --exclude 'vae_dataset*' . $TMPDIR/code
 
 # Copy archetypes and dataset for training
 if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then

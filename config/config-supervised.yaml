@@ -91,7 +91,7 @@ nepochs: 150                      # More epochs for small dataset (OneCycleLR ad
 test:
   test_input_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"          # Directory containing test images
   test_output_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/test"        # Output directory for comparison grids
-  model_path: "logs/VAE_6/last_model.pt"     # Path to trained model checkpoint
+  model_path: "logs/VAE_9/last_model.pt"     # Path to trained model checkpoint
 
 # Interpolation configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml interpolate
