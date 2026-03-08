@@ -13,7 +13,7 @@ def scale_image(image_path, output_dir, scale_factor):
 
         with Image.open(image_path) as img:
             new_size = (int(img.width * scale_factor), int(img.height * scale_factor))
-            img_resized = img.resize(new_size, resample=Image.LANCZOS)
+            img_resized = img.resize(new_size, resample=Image.NEAREST)
             img_resized.save(output_path, format="PNG")
     except Exception:
         pass
@@ -38,6 +38,6 @@ def batch_scale_images(image_dir, output_dir, scale_factor=0.5, max_workers=12):
             pass
 
 if __name__ == "__main__":
-    image_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE/dataset/archetypes_phone/png"
-    output_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE//dataset/archetypes_phone/png_scaled"
+    image_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE/dataset_supervised/dataset_supervised_pc/png"
+    output_dir = r"/usr/users/sdim/sdim_31/UX-Key-PFE/dataset_supervised/dataset_supervised_pc/png_scaled_1"
     batch_scale_images(image_dir, output_dir, scale_factor=0.2, max_workers=8)
