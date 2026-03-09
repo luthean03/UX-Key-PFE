@@ -8,7 +8,7 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
-INPUT_FOLDER = "./dataset/vae_dataset"
+INPUT_FOLDER = "./dataset/vae_dataset/json"
 OUTPUT_FOLDER = "dataset/vae_dataset/png"
 MAX_WORKERS = min(8, multiprocessing.cpu_count() * 2)
 

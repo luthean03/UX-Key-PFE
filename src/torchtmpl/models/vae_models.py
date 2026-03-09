@@ -219,13 +219,7 @@ class VAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z: torch.Tensor, target_size: Optional[tuple] = None) -> torch.Tensor:
-        """Decode latent vector, dynamically adapting to the target image ratio.
-
-        Args:
-            z: Latent tensor of shape (B, latent_dim).
-            target_size: (Height, Width) of the original input image.
-                         If None, defaults to (256, 128).
-        """
+        """Decode latent vector, dynamically adapting to the target image ratio."""
         if target_size is None:
             target_size = (256, 128)
 
@@ -236,10 +230,11 @@ class VAE(nn.Module):
         if hasattr(self, 'dec_dropout'):
             d = self.dec_dropout(d)
 
-        # 2. Adapt seed to target aspect ratio (4 upsamples → factor 16)
+        # 2. Adapt seed to target aspect ratio using NEAREST
         base_h = max(1, target_size[0] // 16)
         base_w = max(1, target_size[1] // 16)
-        d = F.interpolate(d, size=(base_h, base_w), mode='bilinear', align_corners=False)
+        # On utilise nearest pour garder des "blocs" d'information francs dès la racine
+        d = F.interpolate(d, size=(base_h, base_w), mode='nearest')
 
         # 3. Standard upsampling path
         d = self.dec_up1(d)
@@ -256,9 +251,9 @@ class VAE(nn.Module):
 
         recon = self.dec_final(d)
 
-        # 4. Final adjustment if divisions by 16 were not exact
+        # 4. Final adjustment using NEAREST to preserve sharp edges
         if recon.shape[2:] != target_size:
-            recon = F.interpolate(recon, size=target_size, mode='bilinear', align_corners=False)
+            recon = F.interpolate(recon, size=target_size, mode='nearest')
 
         return recon
 
