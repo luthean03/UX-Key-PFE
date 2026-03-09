@@ -572,7 +572,8 @@ def test(config):
                 
                 # Convert to PIL images
                 original_pil = TF.to_pil_image(img_tensor[0, 0, :h, :w])
-                recon_np = (recon.numpy() * 255).astype(np.uint8)
+                recon_discrete = torch.round(recon * 40.0) / 40.0
+                recon_np = (recon_discrete.clamp(0, 1).numpy() * 255).astype(np.uint8)
                 recon_pil = Image.fromarray(recon_np, mode='L')
                 
                 # Create side-by-side grid

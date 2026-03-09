@@ -12,7 +12,7 @@ data:
   seed: 42                          # Reproducibility
   
   # Memory management
-  max_height: 2048                  # Maximum height
+  max_height: 1500                  # Maximum height
   
   # Denoising augmentation
   noise_level: 0.15                 # Gaussian noise (0.20 was aggressive, risks blurring fine lines)
@@ -52,23 +52,24 @@ model:
 loss:
   name: "l1"                     # 'l1' or 'mse'
   beta_kld: 0.0001                # Slightly lower for 128-dim latent (more KL pressure per dim)
-  warmup_epochs: 40              # 25% of training — lets reconstruction stabilise first
+  warmup_epochs: 20              # 25% of training — lets reconstruction stabilise first
 
+# Optimizer configuration
 # Optimizer configuration
 optim:
   algo: "AdamW"
   params:
-    lr: 0.0003                   # Peak learning rate (used as max_lr by OneCycleLR)
-    weight_decay: 0.00005        # Lighter decay — large dataset needs less explicit regularisation
+    lr: 0.0002                   # Slightly lower peak LR for small dataset stability
+    weight_decay: 0.0003         # Stronger decay to prevent overfitting on 17K images
   
   # Learning rate scheduler
   scheduler:
     name: "OneCycleLR"           # Warmup + Cosine Decay (steps per batch)
     params:
-      max_lr: 0.0003             # Peak LR (should match optim.params.lr)
-      pct_start: 0.3             # 30% of training is warmup
-      div_factor: 25.0           # initial_lr = max_lr / 25 = 1.2e-5
-      final_div_factor: 1000.0   # min_lr = initial_lr / 1000 ≈ 1.2e-8 (gentler tail)
+      max_lr: 0.0002             # Peak LR (match optim.params.lr)
+      pct_start: 0.15            # 25% warmup (shorter — smaller dataset converges faster)
+      div_factor: 25.0           # initial_lr = max_lr / 25 = 8e-6
+      final_div_factor: 1000.0   # min_lr = initial_lr / 1000 ≈ 8e-9
       anneal_strategy: "cos"     # Cosine annealing after warmup
 
 # Training optimization
