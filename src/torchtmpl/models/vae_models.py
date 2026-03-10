@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
-__all__ = ["VAE"]
+__all__ = ["VAE", "FullyConvVAE"]
 
 
 class MaskedGroupNorm(nn.Module):
