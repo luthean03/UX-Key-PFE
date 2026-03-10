@@ -50,7 +50,7 @@ model:
 # find the geometric structures before applying the compression tax.
 loss:
   name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 0.01                 # NOUVEAU : Rééquilibré pour la normalisation spatiale 3D
+  beta_kld: 0.0001               # NOUVEAU : Rééquilibré pour la normalisation spatiale 3D
   warmup_epochs: 15              # NOUVEAU : 10% du training pour construire les arêtes nettes d'abord
 
 # Optimizer configuration
