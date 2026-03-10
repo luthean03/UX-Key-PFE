@@ -26,30 +26,35 @@ def slerp_numpy(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
     """Spherical linear interpolation between two latent codes.
 
     Preserves the norm of latent vectors for smoother interpolation
-    than linear lerp.
+    than linear lerp. Works with tensors of any shape by flattening first.
     """
-    # Normalise to unit vectors
-    z1_norm = z1 / (np.linalg.norm(z1) + 1e-8)
-    z2_norm = z2 / (np.linalg.norm(z2) + 1e-8)
-    
+    orig_shape = z1.shape
+    # Aplatir pour le calcul géométrique (supporte tenseurs 1D, 3D, etc.)
+    z1_flat = z1.flatten()
+    z2_flat = z2.flatten()
+
+    z1_norm = z1_flat / (np.linalg.norm(z1_flat) + 1e-8)
+    z2_norm = z2_flat / (np.linalg.norm(z2_flat) + 1e-8)
+
     # Compute angle
     dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
     omega = np.arccos(dot)
     sin_omega = np.sin(omega)
-    
+
     # Nearly parallel: fall back to lerp
     if np.abs(sin_omega) < 1e-6:
-        return (1 - alpha) * z1 + alpha * z2
-    
+        res = (1 - alpha) * z1_flat + alpha * z2_flat
+        return res.reshape(orig_shape)
+
     # Interpolate and rescale
-    scale1 = np.linalg.norm(z1)
-    scale2 = np.linalg.norm(z2)
+    scale1 = np.linalg.norm(z1_flat)
+    scale2 = np.linalg.norm(z2_flat)
     scale = (1 - alpha) * scale1 + alpha * scale2
-    
+
     z_interp = (np.sin((1 - alpha) * omega) / sin_omega) * z1_norm + \
                (np.sin(alpha * omega) / sin_omega) * z2_norm
-    
-    return z_interp * scale
+
+    return (z_interp * scale).reshape(orig_shape)
 
 
 def generate_unique_logpath(logdir, raw_run_name):

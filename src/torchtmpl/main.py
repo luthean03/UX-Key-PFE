@@ -885,8 +885,13 @@ def clustering(config):
                 padded_img = padded_img.to(device)
                 mask = mask.to(device)
                 _, mu, _ = model(padded_img, mask=mask)
-                
-                latents.append(mu.cpu().numpy())
+
+                # Global Average Pooling si le latent est spatial (4D)
+                if mu.dim() == 4:
+                    mu_pooled = mu.mean(dim=[2, 3])
+                    latents.append(mu_pooled.cpu().numpy())
+                else:
+                    latents.append(mu.cpu().numpy())
                 images.append(img_tensor[0].cpu())  # Store original (unpadded) image
                 image_names.append(img_path.stem)  # Store filename without extension
                 

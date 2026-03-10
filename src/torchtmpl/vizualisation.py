@@ -72,7 +72,12 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
                 # Encode using the padded tensor and mask (like training/validation)
                 _, mu, _ = model(padded.to(device), mask=mask.to(device))
 
-                latents.append(mu.cpu().numpy())
+                # Global Average Pooling si le latent est spatial (4D)
+                if mu.dim() == 4:
+                    mu_pooled = mu.mean(dim=[2, 3])
+                    latents.append(mu_pooled.cpu().numpy())
+                else:
+                    latents.append(mu.cpu().numpy())
                 labels.append(idx)
                 # Store padded image, mask, and original dimensions
                 images.append((padded.cpu(), mask.cpu(), h, w))
@@ -448,7 +453,12 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                     _, mu, _ = model(targets, mask=masks)
             else:
                 _, mu, _ = model(targets, mask=masks)
-            valid_latents.append(mu.cpu().numpy())
+            # Global Average Pooling si le latent est spatial (4D)
+            if mu.dim() == 4:
+                mu_pooled = mu.mean(dim=[2, 3])
+                valid_latents.append(mu_pooled.cpu().numpy())
+            else:
+                valid_latents.append(mu.cpu().numpy())
             # Only store images we'll actually use for visualization
             batch_size = targets.size(0)
             for j in range(batch_size):

@@ -405,12 +405,12 @@ class FullyConvVAE(nn.Module):
         
         return mu, logvar, z
 
-    def decode(self, z: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def decode(self, z: torch.Tensor, mask: Optional[torch.Tensor] = None, target_size: Optional[tuple] = None) -> torch.Tensor:
         d = self.dec_in(z)
-        
+
         if hasattr(self, 'dec_dropout'):
             d = self.dec_dropout(d)
-            
+
         # Pour le masque du décodeur, on part de la petite taille et on remonte
         m_d = F.interpolate(mask, size=d.shape[2:], mode='nearest') if mask is not None else None
 
@@ -431,6 +431,11 @@ class FullyConvVAE(nn.Module):
         d = self.dec_block4(d, mask=m_d)
 
         recon = self.dec_final(d)
+
+        # Ajustement final si une target_size est forcée (ex: interpolation entre images)
+        if target_size is not None and recon.shape[2:] != torch.Size(list(target_size)):
+            recon = F.interpolate(recon, size=target_size, mode='nearest')
+
         return recon
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> tuple:
