@@ -6,8 +6,8 @@ class SimpleVAELoss(nn.Module):
     """VAE ELBO loss: pixel reconstruction + KL divergence.
     
     Adapté pour les wireframes à densité variable (rectangles superposés).
-    Utilise une normalisation 'Per-Pixel' pour stabiliser l'entraînement
-    indépendamment de la taille des images (SmartBatching) ou de la complexité.
+    Utilise une normalisation 'Per-Pixel' et 'Per-Latent-Spatial-Volume'
+    pour stabiliser l'entraînement indépendamment de la taille des images (Fully Conv).
 
     Args:
         mode: 'l1' (recommandé pour l'accumulation), 'mse', ou 'bce'.
@@ -24,7 +24,7 @@ class SimpleVAELoss(nn.Module):
         Args:
             recon_x: Image reconstruite (B, C, H, W) -> Valeurs dans [0, 1]
             x: Image cible (B, C, H, W) -> Valeurs dans [0, 1] (nuances de gris)
-            mu, logvar: Paramètres de l'espace latent
+            mu, logvar: Paramètres de l'espace latent (B, C_latent, H_latent, W_latent)
             mask: Masque binaire des pixels valides (pour géométrie variable)
         """
         # Cast pour éviter les erreurs de type (float16/float32)
@@ -32,40 +32,33 @@ class SimpleVAELoss(nn.Module):
         x = x.float()
         mu = mu.float()
         logvar = logvar.float()
+        B = mu.size(0)
 
         # ---------------------------------------------------------------------
-        # 1. NORMALISATION UNIVERSELLE (Le "Per-Pixel")
+        # 1. NORMALISATION DE LA RECONSTRUCTION (Le "Per-Pixel")
         # ---------------------------------------------------------------------
-        # On compte le nombre exact de pixels valides sur lesquels on apprend.
-        # Cela rend la loss invariante à la résolution de l'image.
         if mask is not None:
             num_pixels = mask.sum().clamp(min=1.0)
+            mask = mask.float()
         else:
             num_pixels = x.numel()
 
         # ---------------------------------------------------------------------
         # 2. TERME DE RECONSTRUCTION (Énergie de l'erreur)
         # ---------------------------------------------------------------------
-        # On calcule la SOMME des erreurs, pas la moyenne immédiate.
-        
         if mask is not None:
-            mask = mask.float()
             if self.mode == 'l1':
-                # Idéal pour vos rectangles : erreur proportionnelle au nombre de couches manquantes
                 error_map = torch.abs(recon_x - x)
                 term_recon = (error_map * mask).sum()
             elif self.mode == 'mse':
-                # Punit plus fort les grosses erreurs, mais peut flouter les bords des rectangles
                 error_map = (recon_x - x) ** 2
                 term_recon = (error_map * mask).sum()
             elif self.mode == 'bce':
-                # Moins adapté si vos gris sont des compteurs (0, 1, 2...) normalisés
                 bce = F.binary_cross_entropy(recon_x, x, reduction='none')
                 term_recon = (bce * mask).sum()
             else:
                 raise ValueError(f"Unknown mode: {self.mode}")
         else:
-            # Version sans masque (standard)
             if self.mode == 'l1':
                 term_recon = F.l1_loss(recon_x, x, reduction='sum')
             elif self.mode == 'mse':
@@ -79,13 +72,22 @@ class SimpleVAELoss(nn.Module):
         recon_loss = term_recon / num_pixels
 
         # ---------------------------------------------------------------------
-        # 3. TERME KL DIVERGENCE
+        # 3. TERME KL DIVERGENCE (Universel : Latent 1D ou Spatial 3D)
         # ---------------------------------------------------------------------
-        # Somme sur l'espace latent (dim=1) pour avoir la KLD totale par image,
-        # puis moyenne sur la dimension du batch (dim=0).
-        # Indépendant de la taille des images — échelle stable.
-        kld_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
-        kld_loss = kld_per_sample.mean()
+        kld_tensor = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+        
+        # On aplatit les dimensions non-batch pour faire une somme sécurisée
+        kld_per_sample = kld_tensor.view(B, -1).sum(dim=1)
+        
+        # NORMALISATION SPATIALE DYNAMIQUE : 
+        if mu.dim() == 4:
+            # Pour le nouveau FullyConvVAE (B, C, H, W)
+            spatial_volume = mu.size(2) * mu.size(3)
+        else:
+            # Pour l'ancien VAE avec Linear (B, D)
+            spatial_volume = 1.0 
+            
+        kld_loss = (kld_per_sample / spatial_volume).mean()
 
         # ---------------------------------------------------------------------
         # 4. ASSEMBLAGE

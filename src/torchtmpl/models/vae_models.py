@@ -323,3 +323,149 @@ class VAE(nn.Module):
     def encode(self, x: torch.Tensor, mask: torch.Tensor = None) -> tuple:
         """Encode images to latent space (mu, logvar, z)."""
         return self._encode(x, mask)
+
+class FullyConvVAE(nn.Module):
+    def __init__(self, config, input_size, num_classes=0):
+        super(FullyConvVAE, self).__init__()
+        
+        # Le latent_dim devient le nombre de CANAUX de ton espace latent spatial
+        # 16 ou 32 canaux suffisent amplement pour encoder la structure locale
+        self.latent_channels = config.get("latent_dim", 32) 
+        self.dropout_p = config.get("dropout_p", 0.0)
+
+        # --- ENCODER (Réduction spatiale par 16: 2 * 2 * 2 * 2) ---
+        self.enc_conv1_conv = nn.Conv2d(1, 64, 7, 2, 3, bias=False) # /2
+        self.enc_conv1_gn = MaskedGroupNorm(8, 64)
+        self.enc_conv1_relu = nn.ReLU(True)
+        # On remplace le MaxPool par un ResBlock avec stride pour mieux préserver l'info
+        
+        self.enc_block1 = ResidualBlock(64, 128, stride=2)  # /4
+        self.enc_block2 = ResidualBlock(128, 256, stride=2) # /8
+        self.enc_block3 = ResidualBlock(256, 512, stride=2) # /16
+
+        # Projection vers l'espace latent (Remplacement des nn.Linear par nn.Conv2d)
+        self.conv_mu = nn.Conv2d(512, self.latent_channels, kernel_size=3, padding=1)
+        self.conv_logvar = nn.Conv2d(512, self.latent_channels, kernel_size=3, padding=1)
+
+        # --- DECODER (Agrandissement spatial par 16) ---
+        self.dec_in = nn.Conv2d(self.latent_channels, 512, kernel_size=3, padding=1)
+        
+        if self.dropout_p > 0:
+            self.dec_dropout = nn.Dropout2d(self.dropout_p)
+
+        # Upsample 1: *2
+        self.dec_up1 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec_block1 = ResidualBlock(512, 256)
+
+        # Upsample 2: *4
+        self.dec_up2 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec_block2 = ResidualBlock(256, 128)
+
+        # Upsample 3: *8
+        self.dec_up3 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec_block3 = ResidualBlock(128, 64)
+
+        # Upsample 4: *16 (Retour à la taille d'origine)
+        self.dec_up4 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec_block4 = ResidualBlock(64, 32)
+
+        self.dec_final = nn.Sequential(
+            nn.Conv2d(32, 1, 3, 1, 1),
+            nn.Sigmoid()
+        )
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def _encode(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> tuple:
+        # e1
+        e1 = self.enc_conv1_conv(x)
+        e1 = self.enc_conv1_gn(e1, mask)
+        e1 = self.enc_conv1_relu(e1)
+        
+        m1 = F.interpolate(mask, size=e1.shape[2:], mode='nearest') if mask is not None else None
+        
+        # e2
+        e2 = self.enc_block1(e1, mask=m1)
+        m2 = F.interpolate(mask, size=e2.shape[2:], mode='nearest') if mask is not None else None
+        
+        # e3
+        e3 = self.enc_block2(e2, mask=m2)
+        m3 = F.interpolate(mask, size=e3.shape[2:], mode='nearest') if mask is not None else None
+        
+        # e4
+        features = self.enc_block3(e3, mask=m3)
+        
+        # Latent projections (Gardent la dimension spatiale [B, C, H/16, W/16])
+        mu = self.conv_mu(features)
+        logvar = self.conv_logvar(features)
+        z = self.reparameterize(mu, logvar)
+        
+        return mu, logvar, z
+
+    def decode(self, z: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        d = self.dec_in(z)
+        
+        if hasattr(self, 'dec_dropout'):
+            d = self.dec_dropout(d)
+            
+        # Pour le masque du décodeur, on part de la petite taille et on remonte
+        m_d = F.interpolate(mask, size=d.shape[2:], mode='nearest') if mask is not None else None
+
+        d = self.dec_up1(d)
+        m_d = F.interpolate(mask, size=d.shape[2:], mode='nearest') if mask is not None else None
+        d = self.dec_block1(d, mask=m_d)
+
+        d = self.dec_up2(d)
+        m_d = F.interpolate(mask, size=d.shape[2:], mode='nearest') if mask is not None else None
+        d = self.dec_block2(d, mask=m_d)
+
+        d = self.dec_up3(d)
+        m_d = F.interpolate(mask, size=d.shape[2:], mode='nearest') if mask is not None else None
+        d = self.dec_block3(d, mask=m_d)
+
+        d = self.dec_up4(d)
+        m_d = F.interpolate(mask, size=d.shape[2:], mode='nearest') if mask is not None else None
+        d = self.dec_block4(d, mask=m_d)
+
+        recon = self.dec_final(d)
+        return recon
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> tuple:
+        assert x.dim() == 4, f"Expected 4D input (B,C,H,W), got {x.dim()}D"
+        
+        mu, logvar, z = self._encode(x, mask)
+        recon = self.decode(z, mask=mask)
+        
+        # Sécurité pour s'assurer que la taille finale matche parfaitement (à cause des arrondis potentiels)
+        if recon.shape[2:] != x.shape[2:]:
+            recon = F.interpolate(recon, size=x.shape[2:], mode='nearest')
+            
+        if mask is not None:
+            recon = recon * mask
+            
+        return recon, mu, logvar
+
+    def sample(self, num_samples: int = 1, device: torch.device = None, output_size: tuple = (1024, 128)) -> torch.Tensor:
+        """
+        Pour un VAE Fully Convolutional, on génère un bruit de la taille spatiale correspondante 
+        à la taille de sortie divisée par 16.
+        """
+        if device is None:
+            device = next(self.parameters()).device
+            
+        latent_h = max(1, output_size[0] // 16)
+        latent_w = max(1, output_size[1] // 16)
+        
+        z = torch.randn(num_samples, self.latent_channels, latent_h, latent_w, device=device)
+        samples = self.decode(z)
+        
+        if samples.shape[2:] != output_size:
+            samples = F.interpolate(samples, size=output_size, mode='nearest')
+            
+        return samples
+
+    def encode(self, x: torch.Tensor, mask: torch.Tensor = None) -> tuple:
+        return self._encode(x, mask)
