@@ -649,11 +649,21 @@ def interpolate(config):
     
     image_paths = [image1_path, image2_path]
     
+    # 1. Find the bounding box across both images so z1 and z2 share the same shape
+    max_h, max_w = 0, 0
+    for img_path in image_paths:
+        if not os.path.exists(img_path):
+            raise FileNotFoundError(f"Image not found: {img_path}")
+        img = Image.open(img_path)
+        max_h = max(max_h, img.size[1])
+        max_w = max(max_w, img.size[0])
+    
+    stride = 32
+    pad_h_common = ((max_h + stride - 1) // stride) * stride
+    pad_w_common = ((max_w + stride - 1) // stride) * stride
+    
     with torch.no_grad():
         for img_idx, img_path in enumerate(image_paths):
-            if not os.path.exists(img_path):
-                raise FileNotFoundError(f"Image not found: {img_path}")
-            
             logging.info(f"Loading image {img_idx + 1}: {img_path}")
             
             # Load image
@@ -664,24 +674,17 @@ def interpolate(config):
             # Convert to tensor
             img_tensor = TF.to_tensor(img).unsqueeze(0)  # (1, 1, H, W)
             
-            # Pad to multiple of 32
-            stride = 32
-            pad_h = ((h + stride - 1) // stride) * stride
-            pad_w = ((w + stride - 1) // stride) * stride
-            
-            padded_img = torch.zeros(1, 1, pad_h, pad_w)
-            mask = torch.zeros(1, 1, pad_h, pad_w)
+            # 2. Use the COMMON padding so z1 and z2 have the same spatial dimensions
+            padded_img = torch.zeros(1, 1, pad_h_common, pad_w_common)
+            mask = torch.zeros(1, 1, pad_h_common, pad_w_common)
             padded_img[0, :, :h, :w] = img_tensor[0]
             mask[0, 0, :h, :w] = 1.0
             
-            # Encode
-            padded_img = padded_img.to(device)
-            mask = mask.to(device)
-            
-            _, mu, _ = model(padded_img, mask=mask)
+            # Encode (z1 and z2 now guaranteed to have the same shape)
+            _, mu, _ = model(padded_img.to(device), mask=mask.to(device))
             
             # Store latent and original image
-            latents.append(mu[0].cpu().numpy())  # (latent_dim,)
+            latents.append(mu[0].cpu().numpy())
             images_pil.append(img)
     
     z1, z2 = latents[0], latents[1]
@@ -888,9 +891,15 @@ def clustering(config):
                 mask = mask.to(device)
                 _, mu, _ = model(padded_img, mask=mask)
 
-                # Adaptive Average Pooling to fixed 8x4 grid (preserves spatial layout bias)
+                # Adaptive Average Pooling on VALID region only (crop before pool)
                 if mu.dim() == 4:
-                    mu_pooled = F.adaptive_avg_pool2d(mu, output_size=(8, 4)).flatten(start_dim=1)
+                    mask_latent = F.interpolate(mask, size=mu.shape[2:], mode='nearest')
+                    valid_h = int(mask_latent[0, 0, :, 0].sum().item())
+                    valid_w = int(mask_latent[0, 0, 0, :].sum().item())
+                    valid_h = max(valid_h, 1)
+                    valid_w = max(valid_w, 1)
+                    mu_valid = mu[:, :, :valid_h, :valid_w]
+                    mu_pooled = F.adaptive_avg_pool2d(mu_valid, output_size=(8, 4)).flatten(start_dim=1)
                     latents.append(mu_pooled.cpu().numpy())
                 else:
                     latents.append(mu.cpu().numpy())
