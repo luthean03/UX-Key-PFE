@@ -1,5 +1,7 @@
 """Latent space evaluation metrics and visualisation utilities."""
 
+import colorsys
+import json
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -8,6 +10,93 @@ from sklearn.cluster import KMeans
 from PIL import Image
 import pathlib
 import logging
+
+
+def build_ground_truth_label_map(json_dir):
+    """Build a dict mapping PNG stem -> urlId from supervised session JSONs.
+
+    Each session JSON contains a ``loms`` dict whose keys are LOM hashes.
+    The PNG files are named ``{sessionId}_{i}.png`` where *i* is the 0-based
+    position of the LOM in the dict, so we enumerate the dict values.
+
+    Args:
+        json_dir: path to a directory of per-session JSON files.
+
+    Returns:
+        dict[str, str]: e.g. ``{"abc123_0": "about-us", "abc123_1": "index", ...}``
+    """
+    label_map = {}
+    json_path = pathlib.Path(json_dir)
+    json_files = list(json_path.glob("*.json"))
+    if not json_files:
+        logging.warning(f"No JSON files found in {json_dir} — ground-truth labels unavailable.")
+        return label_map
+
+    for jf in json_files:
+        session_id = jf.stem
+        try:
+            data = json.loads(jf.read_text(encoding="utf-8"))
+        except Exception as e:
+            logging.warning(f"Could not parse {jf.name}: {e}")
+            continue
+
+        loms = data.get("loms", {})
+        if not isinstance(loms, dict):
+            continue
+        for i, lom in enumerate(loms.values()):
+            url_id = lom.get("urlId")
+            if url_id is not None:
+                stem = f"{session_id}_{i}"
+                label_map[stem] = url_id
+
+    logging.info(f"Built ground-truth label map: {len(label_map)} entries from {len(json_files)} sessions")
+    return label_map
+
+
+def compute_clustering_metrics(true_labels, pred_labels, method_name="K-Means"):
+    """Compute external clustering metrics against ground-truth labels.
+
+    Requires ``true_labels`` and ``pred_labels`` to have the same length.
+    Both can be arrays of arbitrary (but consistent) label types.
+
+    Returns:
+        dict with keys: ari, ami, nmi, homogeneity, completeness, v_measure.
+    """
+    from sklearn.metrics import (
+        adjusted_rand_score,
+        adjusted_mutual_info_score,
+        normalized_mutual_info_score,
+        homogeneity_completeness_v_measure,
+    )
+
+    true = np.asarray(true_labels)
+    pred = np.asarray(pred_labels)
+
+    ari   = adjusted_rand_score(true, pred)
+    ami   = adjusted_mutual_info_score(true, pred)
+    nmi   = normalized_mutual_info_score(true, pred)
+    h, c, v = homogeneity_completeness_v_measure(true, pred)
+
+    metrics = dict(ari=ari, ami=ami, nmi=nmi, homogeneity=h, completeness=c, v_measure=v)
+
+    logging.info(
+        f"[{method_name}] Clustering metrics vs ground truth — "
+        f"ARI={ari:.4f}  AMI={ami:.4f}  NMI={nmi:.4f}  "
+        f"Hom={h:.4f}  Com={c:.4f}  V={v:.4f}"
+    )
+    return metrics
+
+
+def _generate_distinct_colors(n):
+    """Generate n maximally distinct RGB colors using golden-ratio hue spacing in HSV."""
+    golden_ratio = 0.618033988749895
+    hue = 0.0
+    colors = []
+    for _ in range(n):
+        hue = (hue + golden_ratio) % 1.0
+        r, g, b = colorsys.hsv_to_rgb(hue, 0.82, 0.92)
+        colors.append([int(r * 255), int(g * 255), int(b * 255)])
+    return colors
 
 
 def load_archetypes(archetypes_dir, model, device, max_height=2048):
@@ -72,9 +161,15 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
                 # Encode using the padded tensor and mask (like training/validation)
                 _, mu, _ = model(padded.to(device), mask=mask.to(device))
 
-                # Global Average Pooling si le latent est spatial (4D)
+                # Adaptive Average Pooling on valid region only (crop before pool)
                 if mu.dim() == 4:
-                    mu_pooled = mu.mean(dim=[2, 3])
+                    mask_latent = F.interpolate(mask.to(device), size=mu.shape[2:], mode='nearest')
+                    valid_h = int(mask_latent[0, 0, :, 0].sum().item())
+                    valid_w = int(mask_latent[0, 0, 0, :].sum().item())
+                    valid_h = max(valid_h, 1)
+                    valid_w = max(valid_w, 1)
+                    mu_valid = mu[:, :, :valid_h, :valid_w]
+                    mu_pooled = F.adaptive_avg_pool2d(mu_valid, output_size=(8, 4)).flatten(start_dim=1)
                     latents.append(mu_pooled.cpu().numpy())
                 else:
                     latents.append(mu.cpu().numpy())
@@ -98,7 +193,7 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
 
 def create_interactive_3d_visualization(z_embedded_3d, clustering_results, archetype_embedded, archetype_names,
     train_images, viz_method, epoch, n_samples, latent_dim, output_path,
-    train_image_names=None, archetype_images=None):
+    train_image_names=None, archetype_images=None, gt_labels=None, metrics=None):
     """Create an interactive 3D Plotly scatter with multiple clustering methods and a dropdown switcher.
 
     Args:
@@ -115,12 +210,14 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
         output_path: pathlib.Path.
         train_image_names: optional list[str].
         archetype_images: optional list of (padded, mask, h, w) tuples.
+        gt_labels: optional list[str|None] — ground-truth urlId per training point.
+        metrics: optional dict method_name -> {ari, ami, nmi, homogeneity, completeness, v_measure}.
     """
     try:
         import json
         import base64
         from io import BytesIO
-        import matplotlib.cm as cm
+        from collections import Counter
 
         logging.info(f"Creating interactive 3D {viz_method} visualization with multi-clustering support...")
 
@@ -167,24 +264,48 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
                 if archetype_names:
                     image_names.extend([f"\u2605 {name}" for name in archetype_names])
 
-        # Clustering results (convert numpy arrays to lists)
+        # Clustering results — build JS-friendly dict with optional GT correctness info
         method_names = list(clustering_results.keys())
         clustering_js = {}
         max_k = 0
+        has_gt_in_viz = gt_labels is not None and any(lbl is not None for lbl in gt_labels)
         for method_name, result in clustering_results.items():
             k = int(result["n_clusters"])
             max_k = max(max_k, k)
-            clustering_js[method_name] = {
-                "labels": result["labels"].tolist(),
+            cluster_labels_arr = np.asarray(result["labels"])
+            entry = {
+                "labels": cluster_labels_arr.tolist(),
                 "archLabels": result["archetype_labels"].tolist() if result.get("archetype_labels") is not None else None,
                 "k": k,
             }
+            if has_gt_in_viz:
+                # Majority-vote: for each cluster, find dominant GT class
+                cluster_dominant = {}
+                for c in np.unique(cluster_labels_arr):
+                    gt_in_c = [gt_labels[i] for i in range(len(gt_labels))
+                               if cluster_labels_arr[i] == c and gt_labels[i] is not None]
+                    cluster_dominant[int(c)] = Counter(gt_in_c).most_common(1)[0][0] if gt_in_c else None
+                entry["gtLabels"] = list(gt_labels)
+                entry["correct"] = [
+                    (cluster_dominant.get(int(cluster_labels_arr[i])) == lbl if lbl is not None else None)
+                    for i, lbl in enumerate(gt_labels)
+                ]
+                # Map cluster id -> dominant class name (string keys for JSON)
+                entry["clusterDominant"] = {str(c): d for c, d in cluster_dominant.items()}
+            clustering_js[method_name] = entry
 
-        # Generate color palette (tab20)
-        colors_rgba = cm.tab20(np.linspace(0, 1, max(max_k, 1)))
-        colors_rgb = [[int(c[0] * 255), int(c[1] * 255), int(c[2] * 255)] for c in colors_rgba]
+        # Generate color palette (maximally distinct via golden-ratio HSV spacing)
+        colors_rgb = _generate_distinct_colors(max(max_k, 1))
 
         # Build data JSON
+        # urlId -> archetype_name mapping (strip prefix before first '_')
+        # e.g. "Web_about-us" -> "about-us", "Mobile_index" -> "index"
+        arch_id_map = {}
+        if archetype_names:
+            for aname in archetype_names:
+                stripped = aname.split('_', 1)[-1] if '_' in aname else aname
+                arch_id_map[stripped.lower()] = aname
+
         data_obj = {
             "x": points_x, "y": points_y, "z": points_z,
             "names": image_names,
@@ -194,6 +315,8 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
             "clustering": clustering_js,
             "methodNames": method_names,
             "colors": colors_rgb,
+            "metrics": metrics,  # None when no ground truth; method→{ari,ami,...} otherwise
+            "archIdMap": arch_id_map,  # urlId (lowercase) -> archetype_name
         }
         data_json = json.dumps(data_obj)
 
@@ -231,26 +354,64 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
   var tooltipImg = document.getElementById('tooltip-img');
   var tooltipText = document.getElementById('tooltip-text');
   var lastMouseX = 0, lastMouseY = 0;
+  var currentMethod = DATA.methodNames[0];
 
   document.addEventListener('mousemove', function(e) {
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
   });
 
+  function getArchMap(methodName) {
+    // Returns {archetype_name -> cluster_id}
+    var method = DATA.clustering[methodName];
+    var m = {};
+    if (DATA.archetypes && method && method.archLabels) {
+      for (var j = 0; j < DATA.archetypes.names.length; j++) {
+        m[DATA.archetypes.names[j]] = method.archLabels[j];
+      }
+    }
+    return m;
+  }
+
+  function resolveArchName(urlId) {
+    // urlId -> archetype_name using pre-built map (handles "Web_" prefix etc.)
+    if (!DATA.archIdMap) return null;
+    var key = urlId ? urlId.toLowerCase() : '';
+    return DATA.archIdMap[key] || null;
+  }
+
   function buildTraces(methodName) {
     var method = DATA.clustering[methodName];
     if (!method) return [];
     var traces = [];
     var k = method.k;
+    // Compute archMap once for the whole call (not per point)
+    var archMap = getArchMap(methodName);
 
     for (var c = 0; c < k; c++) {
+      // Per-cluster info: same for all points in this cluster — compute once
+      var dom = method.clusterDominant ? method.clusterDominant[String(c)] : null;
+      var archStr = '';
+      if (dom != null) {
+        var archName = resolveArchName(dom);
+        var archCluster = (archName !== null && archMap[archName] !== undefined) ? archMap[archName] : null;
+        if (archCluster !== null) {
+          archStr = '<br>\uD83C\uDFDB ' + (archCluster === c ? '\u2705' : '\u274c cluster\u00a0' + archCluster) + '\u00a0' + dom;
+        }
+      }
+
       var cx = [], cy = [], cz = [], texts = [], cdata = [];
       for (var i = 0; i < DATA.x.length; i++) {
         if (method.labels[i] === c) {
           cx.push(DATA.x[i]);
           cy.push(DATA.y[i]);
           cz.push(DATA.z[i]);
-          texts.push('<b>' + DATA.names[i] + '</b><br>Cluster ' + c);
+          var gtStr = '';
+          if (method.gtLabels && method.gtLabels[i] !== null && method.gtLabels[i] !== undefined) {
+            var isCorrect = method.correct[i];
+            gtStr = '<br>' + (isCorrect === true ? '\u2705 ' : (isCorrect === false ? '\u274c ' : '\u2753 ')) + method.gtLabels[i];
+          }
+          texts.push('<b>' + DATA.names[i] + '</b><br>Cluster ' + c + gtStr + archStr);
           cdata.push(i);
         }
       }
@@ -292,15 +453,37 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
     return traces;
   }
 
+  function updateMetricsPanel(methodName) {
+    var panel = document.getElementById('metrics-panel');
+    if (!DATA.metrics || !DATA.metrics[methodName]) {
+      panel.style.display = 'none';
+      return;
+    }
+    var m = DATA.metrics[methodName];
+    function colorCls(v) { return v >= 0.5 ? 'metric-good' : (v >= 0.2 ? '' : 'metric-bad'); }
+    function row(label, val) {
+      return '<tr><td class="metric-name">' + label + '</td>' +
+             '<td class="metric-val ' + colorCls(val) + '">' + val.toFixed(3) + '</td></tr>';
+    }
+    panel.innerHTML =
+      '<h4>\uD83D\uDCCA Metrics vs Ground Truth</h4>' +
+      '<table>' +
+      row('ARI', m.ari) + row('AMI', m.ami) + row('NMI', m.nmi) +
+      row('Homogeneity', m.homogeneity) + row('Completeness', m.completeness) +
+      row('V-measure', m.v_measure) +
+      '</table>';
+    panel.style.display = 'block';
+  }
+
   function updatePlot(methodName) {
     var traces = buildTraces(methodName);
     var updatedLayout = JSON.parse(JSON.stringify(LAYOUT));
     updatedLayout.title = TITLE_TPL.replace('{method}', methodName) + ', k=' + DATA.clustering[methodName].k;
     Plotly.react(gd, traces, updatedLayout, {responsive: true});
+    updateMetricsPanel(methodName);
   }
 
   // Initial plot
-  var currentMethod = DATA.methodNames[0];
   updatePlot(currentMethod);
 
   // Method switch handler
@@ -319,9 +502,28 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
       var img = DATA.images[idx];
       var name = DATA.names[idx] || 'Sample ' + idx;
       var cluster = pt.fullData.name || 'Unknown';
+      var gtInfo = '';
+      var method = DATA.clustering[currentMethod];
+      if (method && method.gtLabels && idx < method.gtLabels.length && method.gtLabels[idx] !== null) {
+        var isOk = method.correct[idx];
+        gtInfo = '<br>' + (isOk === true ? '\u2705 ' : (isOk === false ? '\u274c ' : '\u2753 ')) + method.gtLabels[idx];
+      }
+      var archInfo = '';
+      if (method && method.clusterDominant && idx < method.labels.length) {
+        var clOfPt = method.labels[idx];
+        var dom = method.clusterDominant[String(clOfPt)];
+        if (dom != null) {
+          var archName = resolveArchName(dom);
+          var archMap = getArchMap(currentMethod);
+          var archCl = (archName !== null && archMap[archName] !== undefined) ? archMap[archName] : null;
+          if (archCl !== null) {
+            archInfo = '<br>\uD83C\uDFDB\u00a0' + dom + '\u00a0' + (archCl === clOfPt ? '\u2705' : '\u274c\u00a0cluster\u00a0' + archCl);
+          }
+        }
+      }
       if (img) {
         tooltipImg.src = img;
-        tooltipText.innerHTML = '<b>' + name + '</b><br>' + cluster;
+        tooltipText.innerHTML = '<b>' + name + '</b><br>' + cluster + gtInfo + archInfo;
         tooltip.style.display = 'block';
         var x = lastMouseX + 20;
         var y = lastMouseY - 120;
@@ -367,6 +569,22 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
         border-radius: 6px; background: white; cursor: pointer; font-weight: 500;
       }}
       #method-selector:hover {{ border-color: #2980b9; }}
+      #metrics-panel {{
+        position: fixed; bottom: 20px; right: 20px; z-index: 100;
+        background: rgba(255,255,255,0.95); padding: 14px 18px;
+        border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+        font-size: 13px; display: none; min-width: 260px;
+      }}
+      #metrics-panel h4 {{
+        margin: 0 0 10px 0; font-size: 14px; color: #2c3e50;
+        border-bottom: 1px solid #eee; padding-bottom: 6px;
+      }}
+      #metrics-panel table {{ border-collapse: collapse; width: 100%; }}
+      #metrics-panel td {{ padding: 3px 8px; }}
+      #metrics-panel .metric-name {{ color: #666; }}
+      #metrics-panel .metric-val {{ font-weight: 600; color: #2c3e50; text-align: right; }}
+      .metric-good {{ color: #27ae60 !important; }}
+      .metric-bad {{ color: #e74c3c !important; }}
       #hover-tooltip {{
         position: fixed; background: white; border: 3px solid #2c3e50;
         border-radius: 10px; padding: 15px;
@@ -392,6 +610,7 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
       </select>
     </div>
     <div id="plotly-div" style="width:100%;height:100vh;"></div>
+    <div id="metrics-panel"></div>
     <div id="hover-tooltip">
       <img id="tooltip-img" src="" alt="Preview">
       <div class="info" id="tooltip-text"></div>
@@ -453,10 +672,21 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                     _, mu, _ = model(targets, mask=masks)
             else:
                 _, mu, _ = model(targets, mask=masks)
-            # Global Average Pooling si le latent est spatial (4D)
+            # Adaptive Average Pooling to fixed 8x4 grid on valid region only
             if mu.dim() == 4:
-                mu_pooled = mu.mean(dim=[2, 3])
-                valid_latents.append(mu_pooled.cpu().numpy())
+                mask_latent = F.interpolate(masks, size=mu.shape[2:], mode='nearest')
+                batch_size_mu = mu.size(0)
+                for j in range(batch_size_mu):
+                    # Find valid height/width for this specific latent
+                    valid_h = int(mask_latent[j, 0, :, 0].sum().item())
+                    valid_w = int(mask_latent[j, 0, 0, :].sum().item())
+                    valid_h = max(valid_h, 1)
+                    valid_w = max(valid_w, 1)
+                    # Extract only the semantic part
+                    mu_valid = mu[j:j+1, :, :valid_h, :valid_w]
+                    # Apply pooling on the clean region
+                    mu_pooled = F.adaptive_avg_pool2d(mu_valid, output_size=(8, 4)).flatten()
+                    valid_latents.append(mu_pooled.cpu().numpy())
             else:
                 valid_latents.append(mu.cpu().numpy())
             # Only store images we'll actually use for visualization
@@ -543,7 +773,6 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
     try:
         from sklearn.manifold import TSNE
         from sklearn.decomposition import PCA
-        import matplotlib.cm as cm
         
         perplexity = min(30.0, max(5.0, n_samples / 3))
         
@@ -571,7 +800,8 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
             visualizations_3d = [("PCA", z_pca_3d, pca_3d)]
         
         # Generate a figure for each visualisation
-        colors = cm.tab20(np.linspace(0, 1, k))
+        colors_list = _generate_distinct_colors(k)
+        colors = np.array([[r/255, g/255, b/255] for r, g, b in colors_list])
         
         # Process both 2D and 3D visualizations
         for idx, ((viz_method_2d, z_embedded_2d, projection_model_2d), 

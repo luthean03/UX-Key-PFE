@@ -97,14 +97,28 @@ class CBAM(nn.Module):
         self.conv_spatial = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
         self.sigmoid_spatial = nn.Sigmoid()
 
-    def forward(self, x):
-        # Channel attention
-        avg_out = self.fc(self.avg_pool(x))
-        max_out = self.fc(self.max_pool(x))
+    def forward(self, x, mask=None):
+        # 1. Channel attention (masked pooling when mask is provided)
+        if mask is not None:
+            # Masked average pooling
+            x_sum = (x * mask).sum(dim=[2, 3], keepdim=True)
+            m_sum = mask.sum(dim=[2, 3], keepdim=True).clamp(min=1e-5)
+            avg_pool_out = x_sum / m_sum
+
+            # Masked max pooling (set invalid zones to -inf)
+            x_masked_max = x.masked_fill(mask == 0, float('-inf'))
+            max_pool_out, _ = torch.max(x_masked_max.view(x.size(0), x.size(1), -1), dim=2)
+            max_pool_out = max_pool_out.view(x.size(0), x.size(1), 1, 1)
+        else:
+            avg_pool_out = self.avg_pool(x)
+            max_pool_out = self.max_pool(x)
+
+        avg_out = self.fc(avg_pool_out)
+        max_out = self.fc(max_pool_out)
         channel_att = self.sigmoid_channel(avg_out + max_out)
         out = x * channel_att
 
-        # Spatial attention
+        # 2. Spatial attention
         avg_out = torch.mean(out, dim=1, keepdim=True)
         max_out, _ = torch.max(out, dim=1, keepdim=True)
         spatial_concat = torch.cat([avg_out, max_out], dim=1)
@@ -150,7 +164,7 @@ class ResidualBlock(nn.Module):
         out = self.conv2(out)
         out = self.gn2(out, mask_out)
 
-        out = self.cbam(out)
+        out = self.cbam(out, mask_out)
         
         identity = x
         if self.use_projection:

@@ -10,6 +10,7 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 import yaml
 import torch
+import torch.nn.functional as F
 import torchinfo.torchinfo as torchinfo
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -572,8 +573,7 @@ def test(config):
                 
                 # Convert to PIL images
                 original_pil = TF.to_pil_image(img_tensor[0, 0, :h, :w])
-                recon_discrete = torch.round(recon * 40.0) / 40.0
-                recon_np = (recon_discrete.clamp(0, 1).numpy() * 255).astype(np.uint8)
+                recon_np = (recon.clamp(0, 1).numpy() * 255).astype(np.uint8)
                 recon_pil = Image.fromarray(recon_np, mode='L')
                 
                 # Create side-by-side grid
@@ -805,6 +805,8 @@ def clustering(config):
     n_clusters = int(cluster_config.get("n_clusters", 15))
     viz_method = cluster_config.get("viz_method", "both").lower()
     archetypes_dir = cluster_config.get("archetypes_dir")
+    # Optional: directory of session JSON files used to derive ground-truth urlId labels
+    gt_json_dir = cluster_config.get("gt_json_dir", None)
     
     if not model_path:
         raise ValueError("clustering.model_path must be specified in config")
@@ -886,9 +888,9 @@ def clustering(config):
                 mask = mask.to(device)
                 _, mu, _ = model(padded_img, mask=mask)
 
-                # Global Average Pooling si le latent est spatial (4D)
+                # Adaptive Average Pooling to fixed 8x4 grid (preserves spatial layout bias)
                 if mu.dim() == 4:
-                    mu_pooled = mu.mean(dim=[2, 3])
+                    mu_pooled = F.adaptive_avg_pool2d(mu, output_size=(8, 4)).flatten(start_dim=1)
                     latents.append(mu_pooled.cpu().numpy())
                 else:
                     latents.append(mu.cpu().numpy())
@@ -920,7 +922,22 @@ def clustering(config):
         )
         if archetype_latents is not None:
             logging.info(f"Loaded {len(archetype_latents)} archetypes")
-    
+
+    # Build ground-truth label map from supervised session JSONs (optional)
+    # Mapping: PNG stem -> urlId  (e.g. "abc_3" -> "about-us")
+    gt_label_map = {}
+    if gt_json_dir:
+        gt_label_map = vizualisation.build_ground_truth_label_map(gt_json_dir)
+
+    # Attach a GT label to each encoded image (None when not in map)
+    gt_labels_all = [gt_label_map.get(stem) for stem in image_names]
+    has_gt = any(lbl is not None for lbl in gt_labels_all)
+    if has_gt:
+        n_labeled = sum(1 for lbl in gt_labels_all if lbl is not None)
+        logging.info(f"Ground-truth labels found for {n_labeled}/{n_total} images")
+    else:
+        logging.info("No ground-truth labels found — skipping external clustering metrics")
+
     # Perform clustering on full latent space (K-Means + GMM + DBSCAN)
     from sklearn.cluster import KMeans, DBSCAN
     from sklearn.mixture import GaussianMixture
@@ -931,8 +948,14 @@ def clustering(config):
     kmeans_labels = kmeans.fit_predict(latents)
 
     logging.info(f"Performing GMM clustering (k={n_clusters})...")
-    gmm = GaussianMixture(n_components=n_clusters, random_state=42, covariance_type='full', n_init=3)
-    gmm_labels = gmm.fit_predict(latents)
+    # Use float64 + reg_covar for numerical stability (high-dim latents with limited samples
+    # make full covariance ill-conditioned; 'diag' is a robust fallback).
+    latents_f64 = latents.astype(np.float64)
+    gmm = GaussianMixture(
+        n_components=n_clusters, random_state=42,
+        covariance_type='diag', reg_covar=1e-3, n_init=3,
+    )
+    gmm_labels = gmm.fit_predict(latents_f64)
 
     # DBSCAN — auto-detect eps via nearest-neighbour heuristic
     logging.info("Performing DBSCAN clustering...")
@@ -992,7 +1015,23 @@ def clustering(config):
             "n_clusters": dbscan_n_clusters,
         },
     }
-    
+
+    # ------------------------------------------------------------------ #
+    #  External clustering metrics (requires ground-truth urlId labels)   #
+    # ------------------------------------------------------------------ #
+    all_metrics = {}
+    if has_gt:
+        # Only evaluate on images that have a GT label
+        gt_arr = np.array(gt_labels_all)
+        labeled_mask = np.array([lbl is not None for lbl in gt_labels_all])
+
+        for method_name, result in clustering_results.items():
+            pred_labeled = result["labels"][labeled_mask]
+            true_labeled = gt_arr[labeled_mask]
+            all_metrics[method_name] = vizualisation.compute_clustering_metrics(
+                true_labeled, pred_labeled, method_name
+            )
+
     # Subsample for visualization (clustering already done on full dataset)
     if n_total > max_samples:
         logging.info(f"Subsampling {max_samples} points out of {n_total} for visualization (clustering was on all {n_total})...")
@@ -1002,6 +1041,7 @@ def clustering(config):
         viz_latents = latents[viz_indices]
         viz_images = [images[i] for i in viz_indices]
         viz_image_names = [image_names[i] for i in viz_indices]
+        viz_gt_labels = [gt_labels_all[i] for i in viz_indices] if has_gt else None
         viz_clustering_results = {}
         for method_name, result in clustering_results.items():
             viz_clustering_results[method_name] = {
@@ -1014,6 +1054,7 @@ def clustering(config):
         viz_latents = latents
         viz_images = images
         viz_image_names = image_names
+        viz_gt_labels = gt_labels_all if has_gt else None
         viz_clustering_results = clustering_results
         n_samples = n_total
 
@@ -1086,7 +1127,9 @@ def clustering(config):
             epoch=0,
             n_samples=n_samples,
             latent_dim=latent_dim,
-            output_path=output_path
+            output_path=output_path,
+            gt_labels=viz_gt_labels,
+            metrics=all_metrics if all_metrics else None,
         )
         
         logging.info(f"Saved {method.upper()} visualization to: {output_path}")

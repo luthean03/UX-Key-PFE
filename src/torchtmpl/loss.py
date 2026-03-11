@@ -75,18 +75,20 @@ class SimpleVAELoss(nn.Module):
         # 3. TERME KL DIVERGENCE (Universel : Latent 1D ou Spatial 3D)
         # ---------------------------------------------------------------------
         kld_tensor = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-        
-        # On aplatit les dimensions non-batch pour faire une somme sécurisée
-        kld_per_sample = kld_tensor.view(B, -1).sum(dim=1)
-        
-        # NORMALISATION SPATIALE DYNAMIQUE : 
+
         if mu.dim() == 4:
-            # Pour le nouveau FullyConvVAE (B, C, H, W)
-            spatial_volume = mu.size(2) * mu.size(3)
+            # Pour le FC-VAE : On redimensionne le masque à la taille latente
+            mask_latent = F.interpolate(mask, size=(mu.size(2), mu.size(3)), mode='nearest')
+            # On annule la KLD dans la zone de padding
+            kld_tensor = kld_tensor * mask_latent
+
+            # Le vrai volume spatial n'est pas H*W global, mais la surface valide de chaque image
+            spatial_volume = mask_latent.sum(dim=[2, 3]).mean(dim=1).clamp(min=1.0)  # Shape: (B,)
         else:
-            # Pour l'ancien VAE avec Linear (B, D)
-            spatial_volume = 1.0 
-            
+            spatial_volume = torch.ones(B, device=mu.device)
+
+        # Somme sur les canaux et l'espace, puis division par le volume valide
+        kld_per_sample = kld_tensor.view(B, -1).sum(dim=1)
         kld_loss = (kld_per_sample / spatial_volume).mean()
 
         # ---------------------------------------------------------------------
