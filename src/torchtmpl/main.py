@@ -899,7 +899,7 @@ def clustering(config):
                     valid_h = max(valid_h, 1)
                     valid_w = max(valid_w, 1)
                     mu_valid = mu[:, :, :valid_h, :valid_w]
-                    mu_pooled = F.adaptive_avg_pool2d(mu_valid, output_size=(8, 4)).flatten(start_dim=1)
+                    mu_pooled = F.adaptive_avg_pool2d(mu_valid, output_size=(16, 1)).flatten(start_dim=1)
                     latents.append(mu_pooled.cpu().numpy())
                 else:
                     latents.append(mu.cpu().numpy())

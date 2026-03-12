@@ -1,7 +1,7 @@
 # Fully Convolutional VAE Configuration
 
 # Resume training from checkpoint (optional)
-resume: null 
+resume: "logs/FullyConvVAE_7/last_model.pt"  # Path to checkpoint (null to start fresh)
 
 data:
   train_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/train"
@@ -50,23 +50,23 @@ model:
 # find the geometric structures before applying the compression tax.
 loss:
   name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 0.001                 # NOUVEAU : Rééquilibré pour la normalisation spatiale 3D
-  warmup_epochs: 15              # NOUVEAU : 10% du training pour construire les arêtes nettes d'abord
+  beta_kld: 0.0001                 # NOUVEAU : Rééquilibré pour la normalisation spatiale 3D
+  warmup_epochs: 0              # NOUVEAU : 10% du training pour construire les arêtes nettes d'abord
 
 # Optimizer configuration
 optim:
   algo: "AdamW"
   params:
-    lr: 0.0002                   # Slightly lower peak LR for small dataset stability
+    lr: 0.0001                   # Slightly lower peak LR for small dataset stability
     weight_decay: 0.0003         # Stronger decay to prevent overfitting on 17K images
   
   # Learning rate scheduler
   scheduler:
     name: "OneCycleLR"           # Warmup + Cosine Decay (steps per batch)
     params:
-      max_lr: 0.0002             # Peak LR (match optim.params.lr)
+      max_lr: 0.0001             # Peak LR (match optim.params.lr)
       pct_start: 0.25            # 25% warmup (shorter — smaller dataset converges faster)
-      div_factor: 25.0           # initial_lr = max_lr / 25 = 8e-6
+      div_factor: 10.0           # initial_lr = max_lr / 25 = 8e-6
       final_div_factor: 1000.0   # min_lr = initial_lr / 1000 ≈ 8e-9
       anneal_strategy: "cos"     # Cosine annealing after warmup
 
@@ -101,7 +101,7 @@ interpolate:
 
 # Clustering configuration
 clustering:
-  model_path: "logs/FullyConvVAE_3/last_model.pt"
+  model_path: "logs/FullyConvVAE_7/last_model.pt"
   data_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"
   output_dir: null
   max_samples: 4000
