@@ -137,7 +137,16 @@ python3 -m venv venv
 source venv/bin/activate
 
 # Install project and dependencies via pyproject.toml
+python -m pip install --upgrade pip
 python -m pip install .
+
+# Quick runtime check to fail fast if CUDA is unavailable
+python - <<'PY'
+import torch
+print(f"[CUDA CHECK] torch={{torch.__version__}} cuda={{torch.version.cuda}} available={{torch.cuda.is_available()}} device_count={{torch.cuda.device_count()}}")
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA is not available. Verify GPU allocation and driver visibility on the node.")
+PY
 
 # Configure PyTorch memory allocator for improved efficiency
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

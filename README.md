@@ -46,6 +46,21 @@ python -c "import torch; print(f'PyTorch {torch.__version__}')"
 python -c "from torchtmpl.models import VAE; print('VAE imported successfully')"
 ```
 
+### GPU Nodes (CUDA Explicit Install)
+
+On SLURM GPU nodes, install CUDA-enabled PyTorch wheels explicitly to avoid CPU-only fallback:
+
+```bash
+pip install --upgrade pip
+pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision
+pip install -e .
+
+# Verify CUDA is available
+python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'is_available', torch.cuda.is_available())"
+```
+
+If `torch.cuda.is_available()` returns `False`, check that your SLURM allocation includes GPUs and that the CUDA driver is visible on the node.
+
 ### SLURM Cluster
 
 ```bash

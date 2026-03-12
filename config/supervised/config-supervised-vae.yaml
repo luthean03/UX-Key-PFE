@@ -51,8 +51,8 @@ model:
 # the latent regularisation kicks in.
 loss:
   name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 1                # Balanced for 64-dim latent
-  warmup_epochs: 0              # 13% of 150 epochs — reconstruction-first strategy
+  beta_kld: 0.0001                # Balanced for 64-dim latent
+  warmup_epochs: 15              # 13% of 150 epochs — reconstruction-first strategy
 
 # Optimizer configuration
 optim:
@@ -84,7 +84,7 @@ logging:
   save_reconstructions_every: 5
 
 # Training configuration
-nepochs: 150                      # More epochs for small dataset (OneCycleLR adapts automatically)
+nepochs: 100                      # More epochs for small dataset (OneCycleLR adapts automatically)
 
 # Test (inference) configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml test
