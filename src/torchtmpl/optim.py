@@ -1,3 +1,5 @@
+# Instantiate optimizers and schedulers from configuration with scheduler-specific safeguards.
+
 """Optimizer and scheduler factory functions."""
 
 import torch
@@ -12,6 +14,7 @@ def get_optimizer(cfg, parameters):
     algo = cfg.get("algo", "Adam")
     params = dict(cfg.get("params", {}))
 
+    # Dynamically resolve optimizer class from torch.optim.
     OptimClass = getattr(torch.optim, algo)
     optimizer = OptimClass(parameters, **params)
     return optimizer
@@ -32,13 +35,15 @@ def get_scheduler(optimizer, cfg: dict, steps_per_epoch: Optional[int] = None, e
     """
 
     if not isinstance(cfg, dict) or "scheduler" not in cfg:
+        # Scheduler is optional; return None when not configured.
         return None
 
     sched_config = cfg.get("scheduler", {}) or {}
     name = str(sched_config.get("name", "ReduceLROnPlateau"))
     params = dict(sched_config.get("params", {}) or {})
-    
-    # Convert numeric strings to float (YAML parsing edge-case)
+
+
+    # Normalize numeric strings that can come from YAML parsing edge cases.
     for key in ['eta_min', 'min_lr', 'lr', 'T_0', 'T_mult',
                 'max_lr', 'pct_start', 'div_factor', 'final_div_factor']:
         if key in params and isinstance(params[key], str):
@@ -46,28 +51,31 @@ def get_scheduler(optimizer, cfg: dict, steps_per_epoch: Optional[int] = None, e
                 params[key] = float(params[key])
             except ValueError:
                 pass
-    
-    # Remove unsupported params for specific schedulers
+
+
+    # Remove unsupported args for schedulers that do not accept them.
     if name in ("CosineAnnealingWarmRestarts", "OneCycleLR") and "verbose" in params:
         params.pop("verbose")
-    
+
     logging.info(f"Using Scheduler: {name} with params {params}")
 
-    # ------------------------------------------------------------------
-    # OneCycleLR — special handling (needs total_steps)
-    # ------------------------------------------------------------------
+
+
+
     if name == "OneCycleLR":
+        # OneCycle is step-based, so we need global step count up front.
         if steps_per_epoch is None or epochs is None:
             raise ValueError(
                 "OneCycleLR requires steps_per_epoch and epochs to be "
                 "passed to get_scheduler()."
             )
-        # max_lr is mandatory; fall back to the optimizer's initial lr
+
+        # Use optimizer LR as fallback when max_lr is omitted.
         if "max_lr" not in params:
             params["max_lr"] = optimizer.param_groups[0]["lr"]
-        params.setdefault("pct_start", 0.3)       # 30 % warmup
-        params.setdefault("div_factor", 25.0)      # initial_lr = max_lr / 25
-        params.setdefault("final_div_factor", 1e4) # min_lr = initial_lr / 10 000
+        params.setdefault("pct_start", 0.3)
+        params.setdefault("div_factor", 25.0)
+        params.setdefault("final_div_factor", 1e4)
         params.setdefault("anneal_strategy", "cos")
 
         total_steps = steps_per_epoch * epochs
@@ -78,9 +86,10 @@ def get_scheduler(optimizer, cfg: dict, steps_per_epoch: Optional[int] = None, e
         )
         return torch.optim.lr_scheduler.OneCycleLR(optimizer, **params)
 
-    # ------------------------------------------------------------------
-    # Other schedulers (epoch-level)
-    # ------------------------------------------------------------------
+
+
+
+    # Epoch-based schedulers supported by this project.
     available_schedulers = {
         "ReduceLROnPlateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
         "CosineAnnealingLR": torch.optim.lr_scheduler.CosineAnnealingLR,

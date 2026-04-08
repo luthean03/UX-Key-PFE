@@ -1,3 +1,5 @@
+# Scale PNG images to a fixed width while preserving aspect ratio and grayscale content.
+
 """Batch-scale PNG images using multi-threaded processing."""
 
 import os
@@ -12,6 +14,7 @@ def scale_image(image_path, output_dir, scale_factor):
         output_path = os.path.join(output_dir, filename)
 
         with Image.open(image_path) as img:
+            # NEAREST keeps sharp edges on binary/line-based wireframes.
             new_size = (int(img.width * scale_factor), int(img.height * scale_factor))
             img_resized = img.resize(new_size, resample=Image.NEAREST)
             img_resized.save(output_path, format="PNG")
@@ -22,13 +25,14 @@ def batch_scale_images(image_dir, output_dir, scale_factor=0.5, max_workers=12):
     """Scale all PNGs in image_dir and write results to output_dir."""
     os.makedirs(output_dir, exist_ok=True)
 
-    # Only PNG images in the directory
+
     image_files = [
         os.path.join(image_dir, f)
         for f in os.listdir(image_dir)
         if os.path.isfile(os.path.join(image_dir, f)) and f.lower().endswith('.png')
     ]
 
+    # Process images in parallel to speed up large dataset scaling.
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for image_path in image_files:

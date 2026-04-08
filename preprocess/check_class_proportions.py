@@ -1,3 +1,5 @@
+# Inspect class distribution across dataset JSON files to detect imbalance.
+
 """Print class (urlId) proportions for each split of the supervised dataset.
 
 Usage:
@@ -18,7 +20,8 @@ def build_label_map(json_dir: pathlib.Path) -> dict:
     print(f"Parsing {len(json_files)} JSON files in {json_dir} …", flush=True)
     for jf in json_files:
         try:
-            # Use raw text to avoid loading large 'timeline' key into memory
+
+            # Each session may contain multiple LOM entries.
             data = json.loads(jf.read_bytes())
         except Exception as e:
             print(f"  [WARN] Could not parse {jf.name}: {e}", file=sys.stderr)
@@ -26,6 +29,7 @@ def build_label_map(json_dir: pathlib.Path) -> dict:
         loms = data.get("loms", {})
         if not isinstance(loms, dict):
             continue
+        # Build PNG-stem -> class mapping used later for split counting.
         for i, lom in enumerate(loms.values()):
             uid = lom.get("urlId")
             if uid is not None:
@@ -35,6 +39,7 @@ def build_label_map(json_dir: pathlib.Path) -> dict:
 
 
 def count_split(png_dir: pathlib.Path, label_map: dict):
+    # Count known labels and keep track of unlabeled PNGs.
     counts: Counter = Counter()
     unknown = 0
     for p in png_dir.glob("*.png"):
@@ -96,7 +101,7 @@ def main():
 
     root = pathlib.Path(__file__).parent.parent
 
-    # Default to PC if nothing specified
+
     if not args.pc and not args.phone:
         args.pc = True
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Build a reduced dataset sample while preserving a configurable train/validation ratio.
+
 """Create a reduced dataset by sampling images from train_scaled and validation_scaled.
 
 This script:
@@ -23,7 +25,7 @@ def create_reduced_dataset(
     seed=42
 ):
     """Create reduced dataset with specified train/val split.
-    
+
     Args:
         train_src: Source directory for training images
         val_src: Source directory for validation images
@@ -33,64 +35,68 @@ def create_reduced_dataset(
         seed: Random seed for reproducibility
     """
     random.seed(seed)
-    
+
     train_src = pathlib.Path(train_src)
     val_src = pathlib.Path(val_src)
     out_dir = pathlib.Path(out_dir)
-    
-    # Gather all PNG images from both source directories
+
+
+    # Gather candidates from both source splits before resampling.
     print(f"Gathering images from {train_src} and {val_src}...")
     imgs = list(train_src.rglob("*.png")) + list(val_src.rglob("*.png"))
-    
+
     if len(imgs) == 0:
         print(f"ERROR: No PNG images found in {train_src} or {val_src}", file=sys.stderr)
         sys.exit(1)
-    
+
     print(f"Found {len(imgs)} total images")
-    
-    # Shuffle images for random sampling
+
+
+    # Shuffle once, then slice train/validation subsets from the same pool.
     random.shuffle(imgs)
-    
-    # Compute validation size based on ratio (80/20 means val = train * 0.25)
+
+
+    # Compute validation count from requested ratio (e.g., 80/20).
     val_size = int(train_size * val_ratio / (1.0 - val_ratio))
-    
+
     total_needed = train_size + val_size
     if len(imgs) < total_needed:
         print(f"WARNING: Only {len(imgs)} images available, need {total_needed}")
         print(f"Reducing train_size to maintain {int((1-val_ratio)*100)}/{int(val_ratio*100)} split")
         train_size = int(len(imgs) * (1 - val_ratio))
         val_size = len(imgs) - train_size
-    
+
     print(f"Creating reduced dataset: {train_size} train, {val_size} val")
-    
-    # Create output directories
+
+
     train_out = out_dir / "train"
     val_out = out_dir / "validation"
-    
-    # Clean and create directories
+
+
+    # Recreate output tree from scratch to avoid mixing old/new samples.
     if out_dir.exists():
         print(f"Removing existing {out_dir}...")
         shutil.rmtree(out_dir)
-    
+
     train_out.mkdir(parents=True, exist_ok=True)
     val_out.mkdir(parents=True, exist_ok=True)
-    
-    # Copy training images
+
+
     print(f"Copying {train_size} training images to {train_out}...")
     for i, img_path in enumerate(imgs[:train_size]):
         dest = train_out / img_path.name
         shutil.copy2(img_path, dest)
         if (i + 1) % 500 == 0:
             print(f"  {i + 1}/{train_size} train images copied")
-    
-    # Copy validation images
+
+
     print(f"Copying {val_size} validation images to {val_out}...")
     for i, img_path in enumerate(imgs[train_size:train_size + val_size]):
         dest = val_out / img_path.name
         shutil.copy2(img_path, dest)
         if (i + 1) % 250 == 0:
             print(f"  {i + 1}/{val_size} val images copied")
-    
+
     print(f"\n✓ Reduced dataset created successfully in {out_dir}")
     print(f"  Train: {len(list(train_out.glob('*.png')))} images")
     print(f"  Validation: {len(list(val_out.glob('*.png')))} images")
@@ -134,9 +140,9 @@ if __name__ == "__main__":
         default=42,
         help="Random seed for reproducibility (default: 42)"
     )
-    
+
     args = parser.parse_args()
-    
+
     create_reduced_dataset(
         train_src=args.train_src,
         val_src=args.val_src,

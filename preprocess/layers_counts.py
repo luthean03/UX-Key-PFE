@@ -1,3 +1,5 @@
+# Analyze JSON layout trees to estimate layer-depth distribution statistics.
+
 import os
 import json
 import numpy as np
@@ -96,8 +98,9 @@ def get_max_depth(file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        # --- Format 1 : session JSON (json_to_png_supervised_session.py) ---
-        # { "isMobile": bool, "loms": { hash: { "root": ..., "pageWidth": ..., "pageHeight": ... } } }
+
+        # Support multiple JSON schemas used by preprocessing scripts.
+
         if 'loms' in data:
             depths = []
             for lom_data in data['loms'].values():
@@ -111,13 +114,13 @@ def get_max_depth(file_path):
                     depths.append(d)
             return max(depths) if depths else 0
 
-        # --- Format 2 : compact VAE JSON (json_to_png.py) ---
-        # { "r": root_node, "w": width, "h": height }
+
+
         elif 'r' in data and 'w' in data:
             return _render_max_depth(data['r'], int(data['w']), int(data['h']))
 
-        # --- Format 3 : verbose single-node JSON ---
-        # { "bounds": { "x", "y", "width", "height" }, "children": [...] }
+
+
         elif 'bounds' in data:
             return _render_max_depth(data, int(data['bounds']['width']), int(data['bounds']['height']))
 
@@ -127,6 +130,7 @@ def get_max_depth(file_path):
 
 
 def analyze_dataset():
+    # 1) Collect all JSON files and compute depth per file in parallel.
     files = [os.path.join(INPUT_FOLDER, f) for f in os.listdir(INPUT_FOLDER) if f.endswith('.json')]
     print(f"Fichiers JSON trouvés : {len(files)}")
 
@@ -139,6 +143,7 @@ def analyze_dataset():
         print("Aucune donnée valide trouvée.")
         return
 
+    # 2) Summarize depth distribution with robust percentiles.
     p90  = np.percentile(max_depths, 90)
     p95  = np.percentile(max_depths, 95)
     p99  = np.percentile(max_depths, 99)
@@ -154,7 +159,8 @@ def analyze_dataset():
     print(f"Maximum absolu         : {abs_max} couches")
     print(f"\n>>> Recommandation : fixer GLOBAL_MAX_LAYERS = {int(p99)}")
 
-    # Histogramme de la distribution
+
+    # 3) Save a histogram figure to help choose GLOBAL_MAX_LAYERS.
     plt.figure(figsize=(10, 5))
     plt.hist(max_depths, bins=50, color='steelblue', edgecolor='black')
     plt.axvline(p99, color='red', linestyle='--', linewidth=2, label=f'99e percentile = {int(p99)}')
@@ -172,16 +178,15 @@ def analyze_dataset():
 if __name__ == "__main__":
     analyze_dataset()
 
-# Fichiers JSON trouvés : 108100
-# Analyse des profondeurs: 100%|██████████████████████████████████████████████████████████████| 108100/108100 [1:42:34<00:00, 17.57it/s]
-# 
-# === ANALYSE DE LA PROFONDEUR DES WIREFRAMES ===
-# Fichiers valides       : 107931 / 108100
-# Profondeur moyenne     : 29.19 couches
-# Médiane (50%)          : 30 couches
-# 90ème percentile       : 33 couches
-# 95ème percentile       : 34 couches
-# 99ème percentile (rec) : 39 couches  <-- Valeur recommandée pour GLOBAL_MAX_LAYERS
-# Maximum absolu         : 63 couches
-# 
-# >>> Recommandation : fixer GLOBAL_MAX_LAYERS = 39
+
+
+
+
+
+
+
+
+
+
+
+

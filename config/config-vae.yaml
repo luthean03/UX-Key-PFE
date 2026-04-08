@@ -1,119 +1,101 @@
-# VAE Configuration
+# Base VAE experiment configuration.
 
-# Resume training from checkpoint (optional)
-resume: null 
 
+# Optional checkpoint path used to resume a previous run.
+resume: null
+
+# Dataset paths and dataloader/augmentation settings.
 data:
   train_dir: "dataset/vae_dataset_pc/png_scaled/train"
   valid_dir: "dataset/vae_dataset_pc/png_scaled/validation"
-  archetypes_dir: "dataset/archetypes_pc/png_scaled"  # Labeled wireframes for latent metrics
-  batch_size: 4                    # SmartBatchSampler groups similar-sized images to minimize padding
-  num_workers: 8                   # I/O parallelization (reduced for RAM)
-  seed: 42                          # Reproducibility
-  
-  # Memory management
-  max_height: 1500                  # Maximum height
-  
-  # Denoising augmentation
-  noise_level: 0.15                 # Gaussian noise (0.20 was aggressive, risks blurring fine lines)
-  
-  # Data augmentation (applied to training only)
-  augment: true
-  sp_prob: 0.03                     # Salt-and-pepper noise probability
-  random_erasing_prob: 0.30         # Random masking probability (lower = less destructive)
-  hflip_p: 0.5                      # Horizontal flip — layout remains valid
-  vflip_p: 0.5                      # Vertical flip — layout remains valid
-  translate: [0.1, 0.1]             # Random translation (X, Y fraction) — degrees forced to 0
-  
-  # Random resized crop (exploits SPP variable-size support)
-  random_crop_p: 0.3                # Probability of applying random resized crop
-  random_crop_scale: [0.5, 1.0]     # Crop area ratio range
-  random_crop_ratio: [0.75, 1.33]   # Aspect ratio range
+  archetypes_dir: "dataset/archetypes_pc/png_scaled"  # Reference exemplars used in latent analyses.
+  batch_size: 4  # Physical batch size per optimizer step.
+  num_workers: 8  # DataLoader workers for parallel image loading.
+  seed: 42  # Global seed for reproducibility.
 
-# Model architecture
+  max_height: 1500  # Crop very tall pages to keep memory usage bounded.
+
+  noise_level: 0.15  # Gaussian noise amplitude for denoising training.
+
+  augment: true  # Enable train-time data augmentation.
+  sp_prob: 0.03  # Salt-and-pepper corruption probability.
+  random_erasing_prob: 0.30  # Random block removal probability.
+  hflip_p: 0.5  # Horizontal flip probability.
+  vflip_p: 0.5  # Vertical flip probability.
+  translate: [0.1, 0.1]  # Max translation ratio on X and Y axes.
+
+  random_crop_p: 0.3  # Probability of applying random resized crop.
+  random_crop_scale: [0.5, 1.0]  # Relative crop area range.
+  random_crop_ratio: [0.75, 1.33]  # Aspect ratio range for random crops.
+
+# Model architecture and latent-space dimensions.
 model:
-  class: "FullyConvVAE"            # NOUVEAU : Doit correspondre au nom de ta nouvelle classe
-  latent_dim: 16                   # NOUVEAU : Représente maintenant le nombre de CANAUX de la grille spatiale (16 est idéal)
-  input_channels: 1                # Grayscale images
-  dropout_p: 0.15                # Light dropout — large dataset regularises itself
+  class: "FullyConvVAE"  # Model class name resolved in the model factory.
+  latent_dim: 16  # Number of latent channels in the spatial bottleneck.
+  input_channels: 1  # Grayscale input.
+  dropout_p: 0.15  # Dropout in decoder blocks.
 
-# Loss configuration
-# SimpleVAELoss: L1 reconstruction + KL divergence
-#
-# Reconstruction is normalised per-pixel:
-#   recon = sum(|x - x̂| * mask) / num_valid_pixels  → ~0.01–0.10
-# KLD is summed over latent dims, averaged over batch:
-#   kld   = mean_batch(sum_latent(KLD))              → ~10–100 early on
-#
-# Because KLD is much larger in magnitude, beta_kld must be small
-# (e.g. 0.001–0.01) to balance the two terms. KL annealing is
-# strongly recommended to let reconstruction stabilise before
-# the latent regularisation kicks in.
+# Reconstruction and KL divergence balancing parameters.
 loss:
-  name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 0.0001                # Slightly lower for 128-dim latent (more KL pressure per dim)
-  warmup_epochs: 20              # 25% of training — lets reconstruction stabilise first
+  name: "l1"  # Reconstruction loss type: l1 or mse.
+  beta_kld: 0.0001  # Weight of KL regularization term.
+  warmup_epochs: 20  # Linear KL warmup duration.
 
-# Optimizer configuration
-# Optimizer configuration
+# Optimizer and learning-rate scheduler parameters.
 optim:
   algo: "AdamW"
   params:
-    lr: 0.0002                   # Slightly lower peak LR for small dataset stability
-    weight_decay: 0.0003         # Stronger decay to prevent overfitting on 17K images
-  
+    lr: 0.0002
+    weight_decay: 0.0003
+
 optim:
   algo: AdamW
   params:
-    lr: 0.0002
-    weight_decay: 0.0003
+    lr: 0.0002  # Peak learning rate.
+    weight_decay: 0.0003  # L2 regularization via AdamW decoupled decay.
   scheduler:
-    name: OneCycleLR
+    name: OneCycleLR  # Batch-wise LR schedule with warmup and annealing.
     params:
       anneal_strategy: cos
-      div_factor: 25.0
-      final_div_factor: 1000.0
+      div_factor: 25.0  # initial_lr = max_lr / div_factor.
+      final_div_factor: 1000.0  # min_lr = initial_lr / final_div_factor.
       max_lr: 0.0002
-      pct_start: 0.25
+      pct_start: 0.25  # Fraction of steps used for LR warmup.
 
-# Training optimization
 optimization:
-  accumulation_steps: 8          # Effective batch = 4 × 8 = 32 (smoother gradients)
-  mixed_precision: true          # Automatic mixed precision for speed and memory
+  accumulation_steps: 8  # Effective batch size multiplier.
+  mixed_precision: true  # Enable AMP on CUDA.
 
-# Logging configuration
+# Logging frequency and artifact collection options.
 logging:
-  logdir: "./logs"
+  logdir: "./logs"  # Root folder where run directories are created.
   tensorboard: true
-  log_loss_components: true      # Log SSIM/gradient/KLD separately
-  save_reconstructions_every: 5
+  log_loss_components: true  # Log reconstruction and KL parts separately.
+  save_reconstructions_every: 5  # Epoch interval for reconstruction previews.
 
-# Training configuration
+# Total number of training epochs.
 nepochs: 50
 
-# Test (inference) configuration
-# Usage: python -m src.torchtmpl.main config/config-vae.yaml test
+# Inference-time configuration.
 test:
-  test_input_dir: "dataset/vae_dataset_pc/png_scaled/validation"          # Directory containing test images
-  test_output_dir: "test/test_output"        # Output directory for comparison grids
-  model_path: "logs/VAE_6/last_model.pt"     # Path to trained model checkpoint
+  test_input_dir: "dataset/vae_dataset_pc/png_scaled/validation"  # Folder of input PNGs.
+  test_output_dir: "test/test_output"  # Side-by-side output folder.
+  model_path: "logs/VAE_6/last_model.pt"  # Checkpoint used for inference.
 
-# Interpolation configuration
-# Usage: python -m src.torchtmpl.main config/config-vae.yaml interpolate
+# Latent interpolation command configuration.
 interpolate:
-  image1_path: "dataset/vae_dataset_pc/png_scaled/validation/wireframe_2925866.png"  # First image path
-  image2_path: "dataset/vae_dataset_pc/png_scaled/validation/wireframe_3015001.png"  # Second image path
-  output_dir: "test/interpolate_output"            # Output directory for interpolation grid
-  num_steps: 10                                     # Number of interpolation steps
-  model_path: "logs/VAE_6/last_model.pt"           # Path to trained model checkpoint
+  image1_path: "dataset/vae_dataset_pc/png_scaled/validation/wireframe_2925866.png"  # Interpolation start image.
+  image2_path: "dataset/vae_dataset_pc/png_scaled/validation/wireframe_3015001.png"  # Interpolation end image.
+  output_dir: "test/interpolate_output"  # Output folder for interpolation strip.
+  num_steps: 10  # Number of latent interpolation points.
+  model_path: "logs/VAE_6/last_model.pt"  # Checkpoint used for encode/decode.
 
-# Clustering configuration
-# Usage: python -m src.torchtmpl.main config/config-vae.yaml clustering
+# Latent-space clustering command configuration.
 clustering:
-  model_path: "logs/VAE_6/last_model.pt"           # Path to trained model checkpoint
-  data_dir: "dataset/vae_dataset_pc/png_scaled/validation"  # Directory containing images to cluster
-  output_dir: null                                  # Output directory (null = same as model directory)
-  max_samples: 4000                                 # Maximum number of samples to process
-  n_clusters: 15                                    # Number of clusters for k-means
-  viz_method: "both"                                # Visualization method: 'pca', 'tsne', or 'both'
-  archetypes_dir: "dataset/archetypes_pc/png_scaled"      # Optional: archetypes for reference
+  model_path: "logs/VAE_6/last_model.pt"  # Encoder checkpoint used to produce latents.
+  data_dir: "dataset/vae_dataset_pc/png_scaled/validation"  # Images to cluster.
+  output_dir: null  # Null means output next to model checkpoint.
+  max_samples: 4000  # Max points displayed in interactive visualization.
+  n_clusters: 15  # K for K-Means and GMM.
+  viz_method: "both"  # pca, tsne, or both.
+  archetypes_dir: "dataset/archetypes_pc/png_scaled"  # Optional reference samples.

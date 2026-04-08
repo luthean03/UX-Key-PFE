@@ -1,3 +1,5 @@
+# Provide reproducibility helpers and latent interpolation utilities.
+
 """General utilities: reproducibility, checkpointing, SLERP."""
 
 import os
@@ -15,9 +17,9 @@ def set_reproducibility(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    # deterministic=False allows faster non-deterministic cuDNN kernels.
-    # benchmark=False because input sizes vary per batch (SmartBatchSampler);
-    # benchmark=True would re-profile algorithms at every new (H,W) shape.
+
+
+
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = False
 
@@ -29,29 +31,29 @@ def slerp_numpy(z1: np.ndarray, z2: np.ndarray, alpha: float) -> np.ndarray:
     than linear lerp. Works with tensors of any shape by flattening first.
     """
     orig_shape = z1.shape
-    # Aplatir pour le calcul géométrique (supporte tenseurs 1D, 3D, etc.)
+
     z1_flat = z1.flatten()
     z2_flat = z2.flatten()
 
     z1_norm = z1_flat / (np.linalg.norm(z1_flat) + 1e-8)
     z2_norm = z2_flat / (np.linalg.norm(z2_flat) + 1e-8)
 
-    # Compute angle
+
     dot = np.clip(np.dot(z1_norm, z2_norm), -1.0 + 1e-6, 1.0 - 1e-6)
     omega = np.arccos(dot)
     sin_omega = np.sin(omega)
 
-    # Nearly parallel: fall back to lerp
+
     if np.abs(sin_omega) < 1e-6:
         res = (1 - alpha) * z1_flat + alpha * z2_flat
         return res.reshape(orig_shape)
 
-    # Interpolate and rescale
+
     scale1 = np.linalg.norm(z1_flat)
     scale2 = np.linalg.norm(z2_flat)
     scale = (1 - alpha) * scale1 + alpha * scale2
 
-    z_interp = (np.sin((1 - alpha) * omega) / sin_omega) * z1_norm + \
+    z_interp = (np.sin((1 - alpha) * omega) / sin_omega) * z1_norm +\
                (np.sin(alpha * omega) / sin_omega) * z2_norm
 
     return (z_interp * scale).reshape(orig_shape)

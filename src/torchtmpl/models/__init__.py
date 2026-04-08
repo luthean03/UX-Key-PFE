@@ -1,3 +1,5 @@
+# Register model constructors exposed by the models package.
+
 """Model factory."""
 
 import torch

@@ -1,3 +1,5 @@
+# Generate training curves, reconstructions, and latent-space visualizations.
+
 """Latent space evaluation metrics and visualisation utilities."""
 
 import colorsys
@@ -106,47 +108,47 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
         (latents, labels, label_names, images) or (None, None, None, None).
     """
     import torchvision.transforms as T
-    
+
     archetypes_path = pathlib.Path(archetypes_dir)
     if not archetypes_path.exists():
         logging.warning(f"Archetypes directory not found: {archetypes_dir}")
         return None, None, None, None
-    
-    # Find all archetype images (PNG files without subdirectories)
+
+
     archetype_files = sorted(list(archetypes_path.glob("*.png")))
     if len(archetype_files) == 0:
         logging.warning(f"No archetype images found in {archetypes_dir}")
         return None, None, None, None
-    
+
     logging.info(f"Loading {len(archetype_files)} archetypes from {archetypes_dir}")
-    
+
     latents = []
     labels = []
     label_names = []
     images = []
-    
+
     model.eval()
     with torch.inference_mode():
         for idx, img_path in enumerate(archetype_files):
-            # Extract archetype name
+
             archetype_name = img_path.stem.replace("_linear", "")
             label_names.append(archetype_name)
-            
+
             try:
-                # Load image
+
                 img = Image.open(img_path).convert('L')
-                
-                # Crop if image is taller than max_height (center crop, same as validation)
+
+
                 w, h = img.size
                 if h > max_height:
                     top = (h - max_height) // 2
                     img = img.crop((0, top, w, top + max_height))
-                
-                # Transform to tensor
+
+
                 import torchvision.transforms.functional as TF
                 img_tensor = TF.to_tensor(img).unsqueeze(0)
 
-                # Pad to multiple of 32 (same logic as padded_masked_collate)
+
                 stride = 32
                 _, _, h, w = img_tensor.unsqueeze(0).shape if img_tensor.dim() == 3 else img_tensor.shape
                 pad_h = ((h + stride - 1) // stride) * stride
@@ -154,14 +156,14 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
 
                 padded = torch.zeros(1, img_tensor.shape[1], pad_h, pad_w)
                 mask = torch.zeros(1, 1, pad_h, pad_w)
-                # copy top-left like collate
+
                 padded[0, :, :h, :w] = img_tensor[0]
                 mask[0, 0, :h, :w] = 1.0
 
-                # Encode using the padded tensor and mask (like training/validation)
+
                 _, mu, _ = model(padded.to(device), mask=mask.to(device))
 
-                # Adaptive Average Pooling on valid region only (crop before pool)
+
                 if mu.dim() == 4:
                     mask_latent = F.interpolate(mask.to(device), size=mu.shape[2:], mode='nearest')
                     valid_h = int(mask_latent[0, 0, :, 0].sum().item())
@@ -174,16 +176,16 @@ def load_archetypes(archetypes_dir, model, device, max_height=2048):
                 else:
                     latents.append(mu.cpu().numpy())
                 labels.append(idx)
-                # Store padded image, mask, and original dimensions
+
                 images.append((padded.cpu(), mask.cpu(), h, w))
-                
+
             except Exception as e:
                 logging.warning(f"Failed to load {img_path.name}: {e}")
                 continue
-    
+
     if len(latents) == 0:
         return None, None, None, None
-    
+
     latents = np.concatenate(latents, axis=0)
     labels = np.array(labels)
 
@@ -232,22 +234,22 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
             pil_img.save(buf, format='PNG')
             return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
 
-        # Prepare point coordinates
+
         points_x = z_embedded_3d[:, 0].tolist()
         points_y = z_embedded_3d[:, 1].tolist()
         points_z = z_embedded_3d[:, 2].tolist()
 
-        # Image names
+
         if train_image_names and len(train_image_names) == len(train_images):
             image_names = list(train_image_names)
         else:
             image_names = [f"Sample {i}" for i in range(len(train_images))]
 
-        # Base64 encode images
+
         images_base64 = [tensor_to_base64(img) for img in train_images]
         n_train = len(train_images)
 
-        # Archetype data
+
         arch_js = None
         if archetype_embedded is not None and len(archetype_embedded) > 0:
             arch_js = {
@@ -256,7 +258,7 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
                 "z": archetype_embedded[:, 2].tolist(),
                 "names": list(archetype_names) if archetype_names else [],
             }
-            # Add archetype images
+
             if archetype_images is not None and len(archetype_images) > 0:
                 for i, (padded, mask_t, h, w) in enumerate(archetype_images):
                     arch_img = padded[0, :, :h, :w]
@@ -264,7 +266,7 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
                 if archetype_names:
                     image_names.extend([f"\u2605 {name}" for name in archetype_names])
 
-        # Clustering results — build JS-friendly dict with optional GT correctness info
+
         method_names = list(clustering_results.keys())
         clustering_js = {}
         max_k = 0
@@ -279,7 +281,7 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
                 "k": k,
             }
             if has_gt_in_viz:
-                # Majority-vote: for each cluster, find dominant GT class
+
                 cluster_dominant = {}
                 for c in np.unique(cluster_labels_arr):
                     gt_in_c = [gt_labels[i] for i in range(len(gt_labels))
@@ -290,16 +292,16 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
                     (cluster_dominant.get(int(cluster_labels_arr[i])) == lbl if lbl is not None else None)
                     for i, lbl in enumerate(gt_labels)
                 ]
-                # Map cluster id -> dominant class name (string keys for JSON)
+
                 entry["clusterDominant"] = {str(c): d for c, d in cluster_dominant.items()}
             clustering_js[method_name] = entry
 
-        # Generate color palette (maximally distinct via golden-ratio HSV spacing)
+
         colors_rgb = _generate_distinct_colors(max(max_k, 1))
 
-        # Build data JSON
-        # urlId -> archetype_name mapping (strip prefix before first '_')
-        # e.g. "Web_about-us" -> "about-us", "Mobile_index" -> "index"
+
+
+
         arch_id_map = {}
         if archetype_names:
             for aname in archetype_names:
@@ -315,12 +317,12 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
             "clustering": clustering_js,
             "methodNames": method_names,
             "colors": colors_rgb,
-            "metrics": metrics,  # None when no ground truth; method→{ari,ami,...} otherwise
-            "archIdMap": arch_id_map,  # urlId (lowercase) -> archetype_name
+            "metrics": metrics,
+            "archIdMap": arch_id_map,
         }
         data_json = json.dumps(data_obj)
 
-        # Layout
+
         layout_obj = {
             "scene": {
                 "xaxis": {"title": f"{viz_method} Component 1"},
@@ -334,15 +336,15 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
         }
         layout_json = json.dumps(layout_obj)
 
-        # Title template ('{method}' placeholder for JS)
+
         title_template = f"Interactive 3D {viz_method} - {{method}} on {latent_dim}D Latent Space | Epoch {epoch}, n={n_samples}"
 
-        # Build dropdown options HTML
+
         options_html = "\n".join(
             f'        <option value="{name}">{name}</option>' for name in method_names
         )
 
-        # JavaScript code (plain string — no f-string brace escaping needed)
+
         js_code = r"""
 (function() {
   var DATA = __DATA__;
@@ -543,12 +545,12 @@ def create_interactive_3d_visualization(z_embedded_3d, clustering_results, arche
   });
 })();
 """
-        # Replace JS placeholders with serialized data
+
         js_code = js_code.replace("__DATA__", data_json)
         js_code = js_code.replace("__LAYOUT__", layout_json)
         js_code = js_code.replace("__TITLE_TPL__", title_template)
 
-        # Final HTML
+
         html = f"""<!DOCTYPE html>
 <html>
   <head>
@@ -642,24 +644,24 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
     import base64
     from io import BytesIO
     from tqdm import tqdm
-    
-    # 1. Encode the validation dataset
-    # We encode ALL samples for clustering quality, but only store image tensors
-    # for a random subset (max_samples) used in visualization, to save RAM and time.
+
+
+
+
     n_batches = len(valid_loader)
     total_dataset_size = len(valid_loader.dataset) if hasattr(valid_loader, 'dataset') else n_batches * valid_loader.batch_size
     logging.info(f"Encoding validation dataset ({total_dataset_size} images, {n_batches} batches)...")
-    
-    # Pre-select which global sample indices to keep images for
+
+
     rng = np.random.RandomState(42)
     if total_dataset_size > max_samples:
         keep_image_indices = set(rng.choice(total_dataset_size, size=max_samples, replace=False).tolist())
     else:
-        keep_image_indices = None  # keep all
-    
+        keep_image_indices = None
+
     model.eval()
     valid_latents = []
-    valid_images_sparse = {}  # idx -> tensor, only for selected samples
+    valid_images_sparse = {}
     global_idx = 0
 
     use_amp = device.type == "cuda"
@@ -672,44 +674,44 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                     _, mu, _ = model(targets, mask=masks)
             else:
                 _, mu, _ = model(targets, mask=masks)
-            # Adaptive Average Pooling to fixed 8x4 grid on valid region only
+
             if mu.dim() == 4:
                 mask_latent = F.interpolate(masks, size=mu.shape[2:], mode='nearest')
                 batch_size_mu = mu.size(0)
                 for j in range(batch_size_mu):
-                    # Find valid height/width for this specific latent
+
                     valid_h = int(mask_latent[j, 0, :, 0].sum().item())
                     valid_w = int(mask_latent[j, 0, 0, :].sum().item())
                     valid_h = max(valid_h, 1)
                     valid_w = max(valid_w, 1)
-                    # Extract only the semantic part
+
                     mu_valid = mu[j:j+1, :, :valid_h, :valid_w]
-                    # Apply pooling on the clean region
+
                     mu_pooled = F.adaptive_avg_pool2d(mu_valid, output_size=(16, 1)).flatten()
                     valid_latents.append(mu_pooled.cpu().numpy())
             else:
                 valid_latents.append(mu.cpu().numpy())
-            # Only store images we'll actually use for visualization
+
             batch_size = targets.size(0)
             for j in range(batch_size):
                 if keep_image_indices is None or (global_idx + j) in keep_image_indices:
                     valid_images_sparse[global_idx + j] = targets[j].cpu()
             global_idx += batch_size
-    
+
     if len(valid_latents) == 0:
         logging.warning("No validation samples encoded, skipping visualization")
         return
-    
+
     valid_latents = np.concatenate(valid_latents, axis=0)
     latent_dim = valid_latents.shape[1]
     n_total = len(valid_latents)
 
     logging.info(f"Encoded {n_total} validation samples (latent_dim={latent_dim})")
     logging.info(f"Stored {len(valid_images_sparse)} images for visualization (max_samples={max_samples})")
-    
-    # 2. Load archetypes to determine k
+
+
     archetype_latents, archetype_labels, archetype_names, archetype_images = load_archetypes(archetypes_dir, model, device, max_height)
-    
+
     if archetype_latents is None:
         logging.warning("No archetypes loaded, using k=15 by default")
         k = 15
@@ -717,27 +719,27 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
     else:
         k = len(archetype_names)
         logging.info(f"Loaded {k} archetypes: {', '.join(archetype_names)}")
-    
-    # 3. K-means clustering on latent space before dimensionality reduction
+
+
     logging.info(f"Applying k-means (k={k}) on FULL {latent_dim}D latent space ({n_total} samples)...")
     kmeans_full = KMeans(n_clusters=k, random_state=42, n_init=10)
     valid_cluster_labels_full = kmeans_full.fit_predict(valid_latents)
-    
-    # 4. Assign archetypes to clusters (on full latent space)
+
+
     cluster_to_archetypes_full = {}
     archetype_cluster_assignments_full = None
-    
+
     if archetype_latents is not None:
         logging.info(f"Assigning archetypes to clusters in full {latent_dim}D space...")
         archetype_cluster_assignments_full = kmeans_full.predict(archetype_latents)
-        
-        # Count archetypes per cluster
+
+
         for arch_idx, cluster_id in enumerate(archetype_cluster_assignments_full):
             if cluster_id not in cluster_to_archetypes_full:
                 cluster_to_archetypes_full[cluster_id] = []
             cluster_to_archetypes_full[cluster_id].append(archetype_names[arch_idx])
-        
-        # Log cluster-archetype correspondence
+
+
         logging.info(f"Full {latent_dim}D Cluster-Archetype Correspondence:")
         for cluster_id in range(k):
             archs = cluster_to_archetypes_full.get(cluster_id, [])
@@ -747,12 +749,12 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
                 logging.info(f"  Cluster {cluster_id}: [OK] {archs[0]}")
             else:
                 logging.info(f"  Cluster {cluster_id}: [!] Multiple archetypes: {', '.join(archs)}")
-    
-    # 5. Subsample for visualization (clustering already done on full dataset)
-    # Use the same indices we pre-selected for image storage
+
+
+
     if n_total > max_samples:
         viz_indices = sorted(valid_images_sparse.keys())
-        # In case some images failed to load, limit to what we actually have
+
         viz_indices = [i for i in viz_indices if i < n_total][:max_samples]
         logging.info(f"Subsampling {len(viz_indices)} points out of {n_total} for visualization (clustering was on all {n_total})...")
         viz_indices = np.array(viz_indices)
@@ -763,114 +765,114 @@ def log_latent_space_visualization(model, valid_loader, archetypes_dir, device, 
     else:
         viz_latents = valid_latents
         viz_cluster_labels = valid_cluster_labels_full
-        # Build ordered list from sparse dict
+
         viz_images = [valid_images_sparse[i] for i in sorted(valid_images_sparse.keys()) if i < n_total]
         n_samples = n_total
 
     logging.info(f"Visualization will display {n_samples} points (clustered on {n_total})")
 
-    # 6. PCA / t-SNE on the subsampled data
+
     try:
         from sklearn.manifold import TSNE
         from sklearn.decomposition import PCA
-        
+
         perplexity = min(30.0, max(5.0, n_samples / 3))
-        
-        # PCA on subsampled latents
+
+
         logging.info(f"Generating PCA projection (3 components) on {n_samples} samples...")
         pca_3d = PCA(n_components=3, random_state=42)
         z_pca_3d = pca_3d.fit_transform(viz_latents)
         logging.info(f"PCA explained variance: {pca_3d.explained_variance_ratio_[0]:.3f}, "
                     f"{pca_3d.explained_variance_ratio_[1]:.3f}, {pca_3d.explained_variance_ratio_[2]:.3f}")
         z_pca_2d = z_pca_3d[:, :2]
-        
-        # t-SNE on subsampled latents (if enough samples)
+
+
         if n_samples >= 50:
             logging.info(f"Generating t-SNE 3D projection with perplexity={perplexity:.1f} on {n_samples} samples...")
-            tsne_3d = TSNE(n_components=3, random_state=42, perplexity=perplexity, 
+            tsne_3d = TSNE(n_components=3, random_state=42, perplexity=perplexity,
                           init="pca", learning_rate="auto")
             z_tsne_3d = tsne_3d.fit_transform(viz_latents)
             z_tsne_2d = z_tsne_3d[:, :2]
-            
+
             visualizations_2d = [("PCA", z_pca_2d, pca_3d), ("t-SNE", z_tsne_2d, None)]
             visualizations_3d = [("PCA", z_pca_3d, pca_3d), ("t-SNE", z_tsne_3d, None)]
         else:
             logging.info(f"Skipping t-SNE (n_samples={n_samples} < 50)")
             visualizations_2d = [("PCA", z_pca_2d, pca_3d)]
             visualizations_3d = [("PCA", z_pca_3d, pca_3d)]
-        
-        # Generate a figure for each visualisation
+
+
         colors_list = _generate_distinct_colors(k)
         colors = np.array([[r/255, g/255, b/255] for r, g, b in colors_list])
-        
-        # Process both 2D and 3D visualizations
-        for idx, ((viz_method_2d, z_embedded_2d, projection_model_2d), 
+
+
+        for idx, ((viz_method_2d, z_embedded_2d, projection_model_2d),
                   (viz_method_3d, z_embedded_3d, projection_model_3d)) in enumerate(zip(visualizations_2d, visualizations_3d)):
-            
-            viz_method = viz_method_2d  # Same for both
-            
+
+            viz_method = viz_method_2d
+
             logging.info(f"Visualizing {viz_method} projection with clusters from full {latent_dim}D k-means ({n_samples} displayed / {n_total} total)...")
-            
-            # Project archetypes to 2D and 3D space for visualization
+
+
             arch_embedded_2d = None
             arch_embedded_3d = None
-            
+
             if archetype_latents is not None:
                 logging.info(f"Projecting archetypes to {viz_method} space...")
-                
-                # Project archetypes
-                if projection_model_2d is not None:  # PCA
+
+
+                if projection_model_2d is not None:
                     arch_embedded_2d = projection_model_2d.transform(archetype_latents)[:, :2]
                     arch_embedded_3d = projection_model_3d.transform(archetype_latents)
-                else:  # t-SNE: use nearest-neighbour approximation
+                else:
                     from sklearn.neighbors import NearestNeighbors
                     nbrs = NearestNeighbors(n_neighbors=1).fit(viz_latents)
                     _, indices = nbrs.kneighbors(archetype_latents)
                     arch_embedded_2d = z_embedded_2d[indices.flatten()]
                     arch_embedded_3d = z_embedded_3d[indices.flatten()]
-                                
-            # ===== Create Static 2D Matplotlib Visualization for TensorBoard =====
+
+
             fig, ax = plt.subplots(figsize=(14, 10))
-            
-            # Colour by k-means cluster (computed on full latent space)
+
+
             for cluster_id in range(k):
                 mask = viz_cluster_labels == cluster_id
                 if np.sum(mask) > 0:
-                    # Cluster label (use archetype name if available)
+
                     if archetype_latents is not None and cluster_id in cluster_to_archetypes_full:
                         archs = cluster_to_archetypes_full[cluster_id]
                         label = f"C{cluster_id}: {archs[0]}" if len(archs) == 1 else f"C{cluster_id}: {len(archs)} archs"
                     else:
                         label = f"Cluster {cluster_id}"
-                    
-                    ax.scatter(z_embedded_2d[mask, 0], z_embedded_2d[mask, 1], 
+
+                    ax.scatter(z_embedded_2d[mask, 0], z_embedded_2d[mask, 1],
                               c=[colors[cluster_id]], label=label, s=30, alpha=0.6, edgecolors='none')
-            
-            # Overlay archetype markers (stars coloured by cluster)
+
+
             if archetype_latents is not None and arch_embedded_2d is not None:
                 for i, (name, cluster_id) in enumerate(zip(archetype_names, archetype_cluster_assignments_full)):
-                    ax.scatter(arch_embedded_2d[i, 0], arch_embedded_2d[i, 1], 
-                              c=[colors[cluster_id]], marker='*', s=500, 
+                    ax.scatter(arch_embedded_2d[i, 0], arch_embedded_2d[i, 1],
+                              c=[colors[cluster_id]], marker='*', s=500,
                               edgecolors='white', linewidths=2, zorder=10)
-                    
-                    # Annotate
+
+
                     ax.annotate(name, (arch_embedded_2d[i, 0], arch_embedded_2d[i, 1]),
-                               fontsize=8, ha='center', va='bottom', 
+                               fontsize=8, ha='center', va='bottom',
                                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
-            
+
             ax.set_title(f"Latent Space {viz_method} - K-means on Full {latent_dim}D (Epoch {epoch}, displayed={n_samples}/{n_total}, k={k})", fontsize=14)
             ax.set_xlabel(f"{viz_method} Component 1")
             ax.set_ylabel(f"{viz_method} Component 2")
             ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=9, ncol=2)
             ax.grid(True, alpha=0.3)
-            
+
             plt.tight_layout()
-            # Save to TensorBoard with method-specific tag
+
             tag = "latent/pca_train_kmeans" if viz_method == "PCA" else "latent/tsne_train_kmeans"
             writer.add_figure(tag, fig, epoch)
             plt.close(fig)
             logging.info(f"[OK] {viz_method} visualization saved to TensorBoard")
-        
+
     except Exception as e:
         logging.warning(f"Visualization failed: {e}")
         import traceback

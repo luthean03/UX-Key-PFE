@@ -1,3 +1,5 @@
+# Build datasets, augmentation, and padded batch collation for variable-size wireframe images.
+
 """Dataset and data-loading utilities for variable-size wireframe images."""
 
 import torch
@@ -11,17 +13,18 @@ import logging
 import numpy as np
 from typing import List, Optional
 
-Image.MAX_IMAGE_PIXELS = None 
+Image.MAX_IMAGE_PIXELS = None
 
 
 class SmartBatchSampler(Sampler):
     """Group images by height (with noise) to minimise padding waste."""
-    
+
     def __init__(self, dataset, batch_size: int, shuffle: bool = True):
         self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
-        
+
+        # Cache image heights once so batching does not reopen files every epoch.
         self.heights = self._scan_heights()
 
     def _scan_heights(self):
@@ -32,7 +35,7 @@ class SmartBatchSampler(Sampler):
                 img_path = os.path.join(self.dataset.root_dir, filename)
                 with Image.open(img_path) as img:
                     h = img.height
-                    # Apply max_height crop if needed
+
                     if h > self.dataset.max_height:
                         h = self.dataset.max_height
                     heights.append(h)
@@ -41,31 +44,33 @@ class SmartBatchSampler(Sampler):
                 heights.append(self.dataset.max_height)
         logging.info(f"Scan complete: {len(heights)} images, height range: {min(heights)}-{max(heights)}px")
         return heights
-    
+
     def __iter__(self):
         indices = np.arange(len(self.dataset))
 
         if self.shuffle:
+            # Add small noise so batches vary across epochs while staying size-homogeneous.
             noisy_heights = np.array(self.heights) + np.random.uniform(-100, 100, size=len(indices))
             indices = indices[np.argsort(noisy_heights)]
         else:
             indices = indices[np.argsort(self.heights)]
-        
-        # Create batches from sorted indices
+
+
+        # Split sorted indices into contiguous mini-batches.
         batches = [indices[i:i + self.batch_size] for i in range(0, len(indices), self.batch_size)]
-        
+
         if self.shuffle:
             np.random.shuffle(batches)
-        
+
         for batch in batches:
             yield batch.tolist()
-    
+
     def __len__(self):
         return (len(self.dataset) + self.batch_size - 1) // self.batch_size
 
 
 class VariableSizeDataset(Dataset):
-    def __init__(self, 
+    def __init__(self,
         root_dir: str,
         noise_level: float = 0.0,
         max_height: int = 2048,
@@ -81,7 +86,8 @@ class VariableSizeDataset(Dataset):
         random_crop_ratio: Optional[tuple] = None,
     ) -> None:
         self.root_dir = root_dir
-        # Allow passing an explicit files list (used when splitting train/valid)
+
+        # Reuse a precomputed file list when caller already split train/valid.
         if files_list is not None:
             self.files = list(files_list)
         else:
@@ -101,15 +107,16 @@ class VariableSizeDataset(Dataset):
         self.random_crop_scale = tuple(random_crop_scale) if random_crop_scale else (0.5, 1.0)
         self.random_crop_ratio = tuple(random_crop_ratio) if random_crop_ratio else (0.75, 1.33)
 
+        # Build a lightweight geometric augmentation pipeline.
         augment_transforms = []
 
-        # Flips: layout symmetry, no aliasing
+
         if self.hflip_p > 0:
             augment_transforms.append(T.RandomHorizontalFlip(p=self.hflip_p))
         if self.vflip_p > 0:
             augment_transforms.append(T.RandomVerticalFlip(p=self.vflip_p))
 
-        # Translation: shift without rotation (degrees=0 enforced)
+
         if self.translate is not None:
             augment_transforms.append(
                 T.RandomAffine(degrees=0, translate=self.translate, fill=1.0)
@@ -123,40 +130,43 @@ class VariableSizeDataset(Dataset):
     def __getitem__(self, idx):
         if not (0 <= idx < len(self.files)):
             raise IndexError(f"Index {idx} out of range [0, {len(self.files)})")
-        
+
         img_path = os.path.join(self.root_dir, self.files[idx])
-        
-        # Validation
+
+
         if not os.path.exists(img_path):
             raise FileNotFoundError(f"Image not found: {img_path}")
-        
+
         try:
             clean_image = Image.open(img_path).convert('L')
         except Exception as e:
             raise RuntimeError(f"Failed to load image {img_path}: {e}")
-        
-        # Crop to max_height if needed
+
+
+        # Limit extreme page heights to keep memory usage bounded.
         w, h = clean_image.size
         if h > self.max_height:
-            # Random crop for training (regularization), center crop for validation (reproducibility)
+
             if self.augment:
                 top = random.randint(0, h - self.max_height)
             else:
                 top = (h - self.max_height) // 2
             clean_image = clean_image.crop((0, top, w, top + self.max_height))
-        
-        # Apply augmentation
+
+
+        # Apply geometric transforms before converting to tensors.
         if self.augment and self.augment_transform is not None:
             try:
                 clean_image = self.augment_transform(clean_image)
             except Exception:
                 logging.debug("augment_transform failed for %s", img_path)
 
-        # Random resized crop with NEAREST interpolation (preserves discrete pixel values)
+
+        # Optional random crop introduces scale and framing variation.
         if self.augment and self.random_crop_p > 0 and random.random() < self.random_crop_p:
             try:
                 crop_transform = T.RandomResizedCrop(
-                    size=clean_image.size[::-1],  # (H, W)
+                    size=clean_image.size[::-1],
                     scale=self.random_crop_scale,
                     ratio=self.random_crop_ratio,
                     interpolation=T.InterpolationMode.NEAREST,
@@ -167,7 +177,8 @@ class VariableSizeDataset(Dataset):
 
         clean_tensor = TF.to_tensor(clean_image)
 
-        # Add Gaussian noise
+
+        # Denoising setup: feed noisy input while keeping clean target.
         if self.augment and self.noise_level > 0.0:
             noise = torch.randn_like(clean_tensor) * self.noise_level
             noisy_tensor = clean_tensor + noise
@@ -175,7 +186,8 @@ class VariableSizeDataset(Dataset):
         else:
             noisy_tensor = clean_tensor.clone()
 
-        # Random erasing
+
+        # Randomly hide small regions so model relies on global structure.
         if self.augment and random.random() < self.random_erasing_prob:
             try:
                 eraser = T.RandomErasing(p=1.0, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0)
@@ -183,7 +195,8 @@ class VariableSizeDataset(Dataset):
             except Exception:
                 logging.debug("RandomErasing failed for %s", img_path)
 
-        # Salt-and-pepper noise
+
+        # Inject sparse impulse noise to improve robustness to isolated artifacts.
         if self.augment and self.sp_prob > 0.0 and random.random() < 0.5:
             try:
                 mask = torch.rand_like(noisy_tensor) < self.sp_prob
@@ -201,29 +214,34 @@ def padded_masked_collate(batch):
     inputs = [item[0] for item in batch]
     targets = [item[1] for item in batch]
 
-    # Find maximum dimensions in batch
+
+    # Compute max spatial shape in the batch before padding.
     max_h = max([img.shape[1] for img in inputs])
     max_w = max([img.shape[2] for img in inputs])
 
-    # Pad to nearest multiple of 32 (required by VAE architecture)
+
+    # Round to architecture stride so encoder/decoder dimensions stay compatible.
     stride = 32
     max_h = ((max_h + stride - 1) // stride) * stride
     max_w = ((max_w + stride - 1) // stride) * stride
 
     B = len(batch)
-    # Zero-filled tensors (default padding)
+
+    # Preallocate padded tensors plus mask (1=valid pixel, 0=padding).
     padded_inputs = torch.zeros(B, 1, max_h, max_w)
     padded_targets = torch.zeros(B, 1, max_h, max_w)
     masks = torch.zeros(B, 1, max_h, max_w)
 
     for i in range(B):
         h, w = inputs[i].shape[1], inputs[i].shape[2]
-        
-        # Copy image to top-left corner of padded tensor
+
+
+        # Copy each sample into the top-left valid region.
         padded_inputs[i, :, :h, :w] = inputs[i]
         padded_targets[i, :, :h, :w] = targets[i]
-        
-        # Create mask (1 = valid pixel, 0 = padding)
+
+
+        # Mark valid pixels to ignore padded zones in loss and metrics.
         masks[i, :, :h, :w] = 1.0
 
     return padded_inputs, padded_targets, masks
@@ -232,32 +250,35 @@ def padded_masked_collate(batch):
 def get_dataloaders(data_config, use_cuda):
     noise = float(data_config.get("noise_level", 0.0))
     max_h = int(data_config.get("max_height", 2048))
-    
-    # Support both old (data_dir with split) and new (train_dir/valid_dir) formats
+
+
+    # Config expects explicit train and validation directories.
     train_dir = data_config.get('train_dir')
     valid_dir = data_config.get('valid_dir')
-    
+
     if train_dir and valid_dir:
-        # New format: separate train/valid directories
+
+        # Accept both legacy *_linear names and generic PNG files.
         train_files = [f for f in os.listdir(train_dir) if f.endswith('_linear.png')]
         if len(train_files) == 0:
             train_files = [f for f in os.listdir(train_dir) if f.lower().endswith('.png')]
-        
+
         valid_files = [f for f in os.listdir(valid_dir) if f.endswith('_linear.png')]
         if len(valid_files) == 0:
             valid_files = [f for f in os.listdir(valid_dir) if f.lower().endswith('.png')]
-        
+
         if len(train_files) == 0:
             raise ValueError(f"No PNG files found in train_dir={train_dir}")
         if len(valid_files) == 0:
             raise ValueError(f"No PNG files found in valid_dir={valid_dir}")
-            
+
     else:
         raise ValueError(
             "Config must specify 'train_dir' and 'valid_dir' under data section."
         )
 
-    # Read augmentation params from config
+
+    # Read augmentation knobs once and pass them to dataset constructors.
     augment_flag = bool(data_config.get('augment', True))
     sp_prob = float(data_config.get('sp_prob', 0.02))
     random_erasing_prob = float(data_config.get('random_erasing_prob', data_config.get('random_erasing_p', 0.5)))
@@ -274,7 +295,8 @@ def get_dataloaders(data_config, use_cuda):
     if random_crop_ratio is not None:
         random_crop_ratio = tuple(random_crop_ratio)
 
-    # Create dataset instances with augment enabled for train and disabled for validation
+
+    # Training uses augmentations/noise; validation stays clean and deterministic.
     train_dataset = VariableSizeDataset(
         root_dir=train_dir,
         noise_level=noise,
@@ -300,6 +322,7 @@ def get_dataloaders(data_config, use_cuda):
         random_erasing_prob=0.0,
     )
 
+    # Seed worker-local RNGs for reproducible data augmentation.
     def _seed_worker(worker_id: int):
         worker_seed = torch.initial_seed() % 2**32
         random.seed(worker_seed)
@@ -310,6 +333,7 @@ def get_dataloaders(data_config, use_cuda):
     g = torch.Generator()
     g.manual_seed(seed)
 
+    # Group samples of similar heights to reduce wasted padding.
     train_sampler = SmartBatchSampler(
         train_dataset,
         batch_size=batch_size,
@@ -339,7 +363,7 @@ def get_dataloaders(data_config, use_cuda):
         collate_fn=padded_masked_collate,
     )
 
-    # Best-effort input shape for model factory / torchinfo
+
     try:
         sample_x, _ = train_dataset[0]
         input_size = tuple(sample_x.shape)

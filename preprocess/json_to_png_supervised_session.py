@@ -1,3 +1,5 @@
+# Convert supervised session JSON payloads into normalized grayscale PNG wireframes.
+
 """Convert session JSON files to PNG heatmap images.
 
 Each session JSON contains multiple LOMs (layout object models).
@@ -14,17 +16,18 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
-# Input JSON folders (already sorted from a previous run)
+
 JSON_PC_FOLDER = "./dataset_supervised/dataset_supervised_pc/json"
 JSON_PHONE_FOLDER = "./dataset_supervised/dataset_supervised_phone/json"
 
-# Output folders for PNGs
+
 PNG_PC_FOLDER = "./dataset_supervised/dataset_supervised_pc/png"
 PNG_PHONE_FOLDER = "./dataset_supervised/dataset_supervised_phone/png"
 
 MAX_WORKERS = min(8, multiprocessing.cpu_count() * 2)
 
-# --- NOUVEAU : Plafond absolu pour la normalisation de la vérité terrain ---
+
+# Shared normalization cap so depths are comparable across sessions/devices.
 GLOBAL_MAX_LAYERS = 40.0
 
 
@@ -136,6 +139,7 @@ def render_lom_to_png(root_node, w_canvas, h_canvas, output_path):
     offset_x = 0
     offset_y = abs(min_y) if min_y < 0 else 0
 
+    # Render depth heatmap for one LOM tree.
     real_h = h_canvas + offset_y
     heatmap = np.zeros((real_h, w_canvas), dtype=np.float32)
 
@@ -156,14 +160,15 @@ def render_lom_to_png(root_node, w_canvas, h_canvas, output_path):
     if local_max == 0:
         return False, "Max value is 0"
 
-    # --- CORRECTION DE LA NORMALISATION ICI ---
-    # 1. On écrête (clip) à la limite globale définie (40.0)
+
+
+    # Normalize with a fixed global cap to keep output contrast consistent.
     clipped_heatmap = np.clip(cropped_heatmap, 0, GLOBAL_MAX_LAYERS)
-    
-    # 2. On divise TOUJOURS par la constante globale
+
+
     normalized_img = clipped_heatmap / GLOBAL_MAX_LAYERS
     final_img_uint8 = (normalized_img * 255.0).astype(np.uint8)
-    # ------------------------------------------
+
 
     Image.fromarray(final_img_uint8, mode='L').save(output_path)
     return True, rows_cropped
@@ -187,7 +192,8 @@ def process_session(file_path, png_dir):
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        # Extract LOMs
+
+        # Each JSON session may contain multiple LOMs to export.
         loms = data.get('loms', {})
         if not loms:
             return 0, 1, [f"{filename}: No LOMs found"]
@@ -203,7 +209,7 @@ def process_session(file_path, png_dir):
                     errors.append(f"{session_id}/lom_{lom_idx}: Missing root or dimensions")
                     continue
 
-                # Use session_id + lom index as filename
+
                 png_filename = f"{session_id}_{lom_idx}.png"
                 output_path = os.path.join(png_dir, png_filename)
 
@@ -225,11 +231,12 @@ def process_session(file_path, png_dir):
 
 
 def main():
-    # Create output PNG directories
+
+    # Ensure output folders exist before launching workers.
     for d in (PNG_PC_FOLDER, PNG_PHONE_FOLDER):
         ensure_folder_exists(d)
 
-    # Collect tasks: (file_path, png_dir) from both already-sorted JSON folders
+
     tasks = []
     for json_dir, png_dir in [(JSON_PC_FOLDER, PNG_PC_FOLDER), (JSON_PHONE_FOLDER, PNG_PHONE_FOLDER)]:
         if os.path.isdir(json_dir):
@@ -247,6 +254,7 @@ def main():
     total_failed = 0
     all_errors = []
 
+    # Convert sessions in parallel and collect global counters.
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_file = {
             executor.submit(process_session, file_path, png_dir): os.path.basename(file_path)
@@ -271,7 +279,7 @@ def main():
     print(f"Done. PNG success: {total_success}, PNG failed: {total_failed}")
     print(f"Sessions: {len(tasks)}")
 
-    # Count output files per category
+
     for label, png_d, json_d in [("pc", PNG_PC_FOLDER, JSON_PC_FOLDER), ("phone", PNG_PHONE_FOLDER, JSON_PHONE_FOLDER)]:
         n_png = len([f for f in os.listdir(png_d) if f.endswith('.png')]) if os.path.isdir(png_d) else 0
         n_json = len([f for f in os.listdir(json_d) if f.endswith('.json')]) if os.path.isdir(json_d) else 0

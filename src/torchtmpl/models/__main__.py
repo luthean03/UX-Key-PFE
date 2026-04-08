@@ -1,3 +1,5 @@
+# Support module execution for model package utilities.
+
 """Quick smoke-test for VAE model building."""
 
 import torch
@@ -13,7 +15,7 @@ def test_vae():
         "dropout_p": 0.1,
     }
     input_size = (1, 256, 256)
-    num_classes = 0  # unused for VAE
+    num_classes = 0
     model = build_model(cfg, input_size, num_classes)
 
     batch_size = 2

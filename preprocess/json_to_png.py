@@ -1,3 +1,5 @@
+# Convert compact JSON wireframe trees into normalized grayscale PNG images.
+
 """Convert JSON wireframe descriptions to PNG heatmap images."""
 
 import json
@@ -12,7 +14,8 @@ INPUT_FOLDER = "./dataset/vae_dataset/json"
 OUTPUT_FOLDER = "dataset/vae_dataset/png"
 MAX_WORKERS = min(8, multiprocessing.cpu_count() * 2)
 
-# --- NOUVEAU : Plafond absolu pour la normalisation de la vérité terrain ---
+
+# Clamp layer depth before normalization so all outputs share the same contrast scale.
 GLOBAL_MAX_LAYERS = 40.0
 
 
@@ -28,9 +31,9 @@ def get_node_geometry(node):
     if 'bounds' in node:
         b = node['bounds']
         return (
-            int(b.get('x', 0)), 
-            int(b.get('y', 0)), 
-            int(b.get('width', 0)), 
+            int(b.get('x', 0)),
+            int(b.get('y', 0)),
+            int(b.get('width', 0)),
             int(b.get('height', 0))
         )
     elif 'b' in node:
@@ -52,44 +55,44 @@ def find_min_y_coord(node, abs_y, current_min_y):
     Finds the minimum Y coordinate to handle negative positioning.
     """
     geometry = get_node_geometry(node)
-    
+
     node_y = abs_y
     if geometry:
         _, rel_y, _, _ = geometry
         node_y = abs_y + rel_y
         current_min_y = min(current_min_y, node_y)
-    
+
     children = get_node_children(node)
     for child in children:
         current_min_y = find_min_y_coord(child, node_y, current_min_y)
-        
+
     return current_min_y
 
 
 def paint_additive_recursive(node, canvas, parent_x, parent_y, width, height):
     """
-    Paints filled rectangles. 
+    Paints filled rectangles.
     Nesting increases brightness (Additive).
     Strictly clips to canvas width/height.
     """
     geometry = get_node_geometry(node)
-    
+
     abs_x, abs_y = parent_x, parent_y
     cur_w, cur_h = 0, 0
-    
+
     if geometry:
         rel_x, rel_y, cur_w, cur_h = geometry
         abs_x = parent_x + rel_x
         abs_y = parent_y + rel_y
-        
+
         x_start = max(0, int(abs_x))
         y_start = max(0, int(abs_y))
-        
+
         x_end = min(width, int(abs_x + cur_w))
         y_end = min(height, int(abs_y + cur_h))
-        
+
         if y_end > y_start and x_end > x_start:
-            canvas[y_start:y_end, x_start:x_end] += 1.0 
+            canvas[y_start:y_end, x_start:x_end] += 1.0
 
     children = get_node_children(node)
     for child in children:
@@ -102,18 +105,18 @@ def find_content_bounds(heatmap):
     """
     non_zero_rows = np.any(heatmap > 0, axis=1)
     non_zero_cols = np.any(heatmap > 0, axis=0)
-    
+
     if not np.any(non_zero_rows):
         return None
-    
+
     row_indices = np.where(non_zero_rows)[0]
     col_indices = np.where(non_zero_cols)[0]
-    
+
     top_row = row_indices[0]
     bottom_row = row_indices[-1] + 1
     left_col = col_indices[0]
     right_col = col_indices[-1] + 1
-    
+
     return (top_row, bottom_row, left_col, right_col)
 
 
@@ -123,11 +126,12 @@ def process_file(file_path, output_dir):
     """
     filename = os.path.basename(file_path)
     name_without_ext = os.path.splitext(filename)[0]
-    
+
     try:
+        # 1) Parse one JSON file and detect supported schema.
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            
+
         root_node = None
         w_canvas, h_canvas = 0, 0
 
@@ -146,9 +150,10 @@ def process_file(file_path, output_dir):
         offset_x = 0
         offset_y = abs(min_y) if min_y < 0 else 0
 
+        # 2) Render additive heatmap where deeper nesting increases intensity.
         real_h = h_canvas + offset_y
         heatmap = np.zeros((real_h, w_canvas), dtype=np.float32)
-        
+
         paint_additive_recursive(root_node, heatmap, offset_x, offset_y, w_canvas, real_h)
 
         if np.max(heatmap) == 0:
@@ -157,7 +162,7 @@ def process_file(file_path, output_dir):
         bounds = find_content_bounds(heatmap)
         if bounds is None:
             return False, f"No content found: {filename}"
-        
+
         top_row, bottom_row, left_col, right_col = bounds
         cropped_heatmap = heatmap[top_row:bottom_row, :]
         rows_cropped = heatmap.shape[0] - cropped_heatmap.shape[0]
@@ -166,16 +171,18 @@ def process_file(file_path, output_dir):
         if local_max == 0:
             return False, "Max value is 0"
 
-        # --- CORRECTION DE LA NORMALISATION ICI ---
-        # 1. On écrête (clip) à la limite globale définie (40.0)
+
+
+    # 3) Normalize with a fixed global cap for consistent pixel value meaning.
         clipped_heatmap = np.clip(cropped_heatmap, 0, GLOBAL_MAX_LAYERS)
-        
-        # 2. On divise TOUJOURS par la constante globale pour conserver le même contraste
+
+
         normalized_img = clipped_heatmap / GLOBAL_MAX_LAYERS
         final_img_uint8 = (normalized_img * 255.0).astype(np.uint8)
-        # ------------------------------------------
 
-        # Append '-None' suffix for purely numeric filenames (no letters)
+
+
+    # 4) Keep a stable filename convention for downstream scripts.
         name_lower = name_without_ext.lower()
         has_none_suffix = '-none' in name_lower
         has_no_letters = not any(c.isalpha() for c in name_without_ext)
@@ -189,7 +196,7 @@ def process_file(file_path, output_dir):
         output_path = os.path.join(output_dir, final_filename)
 
         Image.fromarray(final_img_uint8, mode='L').save(output_path)
-        
+
         return True, rows_cropped
 
     except Exception as e:
@@ -199,24 +206,25 @@ def process_file(file_path, output_dir):
 def main():
     ensure_folder_exists(OUTPUT_FOLDER)
     files = [f for f in os.listdir(INPUT_FOLDER) if f.endswith('.json')]
-    
+
     print(f"Found {len(files)} JSON files...")
     print(f"Using {MAX_WORKERS} workers")
     print(f"Global Normalization: Maximum layers set to {GLOBAL_MAX_LAYERS}")
-    
+
     successful = 0
     failed = 0
     total_rows_cropped = 0
     errors = []
-    
+
     file_paths = [(os.path.join(INPUT_FOLDER, f), OUTPUT_FOLDER) for f in files]
-    
+
+    # Process files in parallel and aggregate per-file status.
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_file = {
             executor.submit(process_file, *fp): os.path.basename(fp[0])
             for fp in file_paths
         }
-        
+
         with tqdm(total=len(files), unit="img") as pbar:
             for future in as_completed(future_to_file):
                 filename = future_to_file[future]
@@ -231,9 +239,9 @@ def main():
                 except Exception as e:
                     failed += 1
                     errors.append(f"{filename}: {e}")
-                
+
                 pbar.update(1)
-    
+
     print("\n" + "=" * 60)
     print(f"Done. Success: {successful}, Failed: {failed}")
     if errors:

@@ -1,4 +1,5 @@
 #!/usr/bin/python
+# Submit and patch SLURM jobs for training, testing, interpolation, and clustering workflows.
 
 import base64
 import os
@@ -54,7 +55,7 @@ if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then
     # Support both old format (data_dir) and new format (train_dir/valid_dir)
     SRC_TRAIN="{train_src}"
     SRC_VALID="{valid_src}"
-    
+
     if [[ -n "$SRC_TRAIN" && "$SRC_TRAIN" != "None" ]]; then
         # New format: separate train/valid directories
         if [[ "$SRC_TRAIN" != /* ]]; then
@@ -65,7 +66,7 @@ if [[ "{command}" == "train" || "{command}" == "train_test" ]]; then
             rsync -r "$SRC_TRAIN/" "$TMPDIR/code/vae_dataset_train/"
             echo "[OK] Train dataset copied: $(find $TMPDIR/code/vae_dataset_train -type f | wc -l) files"
         fi
-        
+
         if [[ "$SRC_VALID" != /* ]]; then
             SRC_VALID="$current_dir/$SRC_VALID"
         fi
@@ -190,7 +191,7 @@ if train_dir and valid_dir:
     # New format: separate train/valid directories
     local_train = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'vae_dataset_train'
     local_valid = pathlib.Path(os.environ['TMPDIR']) / 'code' / 'vae_dataset_valid'
-    
+
     if local_train.exists():
         data_cfg['train_dir'] = str(local_train)
         print(f"[OK] Using local train dataset on node: {{local_train}}")
@@ -198,7 +199,7 @@ if train_dir and valid_dir:
         train_path = pathlib.Path(train_dir).expanduser()
         if not train_path.is_absolute():
             data_cfg['train_dir'] = str(base / train_path)
-    
+
     if local_valid.exists():
         data_cfg['valid_dir'] = str(local_valid)
         print(f"[OK] Using local valid dataset on node: {{local_valid}}")
@@ -206,7 +207,7 @@ if train_dir and valid_dir:
         valid_path = pathlib.Path(valid_dir).expanduser()
         if not valid_path.is_absolute():
             data_cfg['valid_dir'] = str(base / valid_path)
-    
+
     cfg['data'] = data_cfg
 else:
     # Old format: single data_dir
@@ -336,7 +337,7 @@ if [[ "{command}" == "test" || "{command}" == "train_test" ]]; then
     if [[ $? != 0 ]]; then
         exit -1
     fi
-    
+
     # Copy test results back to shared filesystem
     # Extract test output directory from config
     TEST_OUTPUT_DIR=$(python3 -c "
@@ -346,7 +347,7 @@ cfg = yaml.safe_load(open('$job_config'))
 test_output = cfg.get('test', {{}}).get('test_output_dir', './test_output')
 print(test_output)
 ")
-    
+
     # Copy results from compute node to shared directory
     if [[ -d "$TEST_OUTPUT_DIR" ]]; then
         echo "[OK] Copying test results back to shared filesystem..."
@@ -366,7 +367,7 @@ if [[ "{command}" == "interpolate" || "{command}" == "train_test" ]]; then
     if [[ $? != 0 ]]; then
         exit -1
     fi
-    
+
     # Copy interpolation results back to shared filesystem
     # Extract interpolation output directory from config
     INTERP_OUTPUT_DIR=$(python3 -c "
@@ -376,7 +377,7 @@ cfg = yaml.safe_load(open('$job_config'))
 interp_output = cfg.get('interpolate', {{}}).get('output_dir', './interpolate_output')
 print(interp_output)
 ")
-    
+
     # Copy results from compute node to shared directory
     if [[ -d "$INTERP_OUTPUT_DIR" ]]; then
         echo "[OK] Copying interpolation results back to shared filesystem..."
@@ -396,7 +397,7 @@ if [[ "{command}" == "clustering" ]]; then
     if [[ $? != 0 ]]; then
         exit -1
     fi
-    
+
     # Copy clustering results back to shared filesystem
     # Extract clustering output directory from config
     CLUSTER_OUTPUT_DIR=$(python3 -c "
@@ -411,7 +412,7 @@ if output_dir is None and model_path:
     output_dir = str(model_dir / 'clustering_viz')
 print(output_dir or './clustering_viz')
 ")
-    
+
     # Copy results from compute node to shared directory
     if [[ -d "$CLUSTER_OUTPUT_DIR" ]]; then
         echo "[OK] Copying clustering results back to shared filesystem..."
@@ -484,7 +485,7 @@ if remaining and remaining[0] == "--":
     remaining.pop(0)
 extra_args = " ".join(shlex.quote(a) for a in remaining)
 
-# Verification Git
+
 result = int(
     subprocess.run(
         "expr $(git diff --name-only | wc -l) + $(git diff --name-only --cached | wc -l)",
@@ -510,40 +511,40 @@ os.system("mkdir -p logslurms")
 with open(configpath, "rb") as fp:
     config_b64 = base64.b64encode(fp.read()).decode("ascii")
 
-# Parse yaml to extract paths for rsync (avoid hardcoded paths)
+
 with open(configpath, "r") as fp:
     try:
         cfg_rsync = yaml.safe_load(fp)
         data_cfg = cfg_rsync.get('data', {})
-        
-        # Support both old format (data_dir) and new format (train_dir/valid_dir)
+
+
         train_src = data_cfg.get('train_dir')
         valid_src = data_cfg.get('valid_dir')
-        
+
         if not train_src or not valid_src:
-            # Fallback to old format
+
             data_src = data_cfg.get('data_dir', 'vae_dataset_scaled')
             train_src = None
             valid_src = None
         else:
             data_src = None
-        
+
         archetypes_src = data_cfg.get('archetypes_dir', 'archetypes_png')
-        
-        # Extract clustering data directory (separate from training data)
+
+
         cluster_cfg = cfg_rsync.get('clustering', {})
         cluster_data_src = cluster_cfg.get('data_dir')
-        
-        # If command is clustering, use clustering data_dir instead of training data
+
+
         if command == 'clustering' and cluster_data_src:
             data_src = cluster_data_src
             train_src = None
             valid_src = None
-        
-        # Extract test input directory
+
+
         test_cfg = cfg_rsync.get('test', {})
         test_input_src = test_cfg.get('test_input_dir')
-        
+
     except Exception as e:
         print(f"Warning: Could not parse paths from yaml ({e}), using default fallback.")
         data_src = 'vae_dataset_scaled'
@@ -552,9 +553,9 @@ with open(configpath, "r") as fp:
         archetypes_src = 'archetypes_png'
         test_input_src = None
 
-job = makejob(commit_id, config_b64, nruns, command, 
-              data_src if data_src else 'None', 
-              archetypes_src, 
+job = makejob(commit_id, config_b64, nruns, command,
+              data_src if data_src else 'None',
+              archetypes_src,
               extra_args=extra_args,
               train_src=train_src if train_src else 'None',
               valid_src=valid_src if valid_src else 'None',

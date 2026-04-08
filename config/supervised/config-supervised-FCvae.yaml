@@ -1,58 +1,47 @@
-# Fully Convolutional VAE Configuration
+# Supervised fully-convolutional VAE experiment configuration.
 
-# Resume training from checkpoint (optional)
-resume: null  # Path to checkpoint (null to start fresh)
 
+# Optional checkpoint path used to resume a previous run.
+resume: null
+
+# Dataset paths and dataloader/augmentation settings.
 data:
   train_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/train"
   valid_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"
-  archetypes_dir: "dataset_supervised/archetypes_pc/png_scaled"  # Labeled wireframes for latent metrics
-  batch_size: 4                    # SmartBatchSampler groups similar-sized images to minimize padding
-  num_workers: 8                   # I/O parallelization (reduced for RAM)
-  seed: 42                         # Reproducibility
-  
-  # Memory management
-  max_height: 2048                 # Maximum height
-  
-  # Denoising augmentation
-  noise_level: 0.15                # Gaussian noise (0.20 can blur thin wireframe lines)
-  
-  # Data augmentation (applied to training only)
+  archetypes_dir: "dataset_supervised/archetypes_pc/png_scaled"  # Reference exemplars for latent analysis.
+  batch_size: 4  # Physical batch size.
+  num_workers: 8  # Data loading workers.
+  seed: 42  # Reproducibility seed.
+
+  max_height: 2048  # Clip very tall pages.
+
+  noise_level: 0.15  # Gaussian noise level for denoising training.
+
   augment: true
-  sp_prob: 0.03                    # Salt-and-pepper noise probability
-  random_erasing_prob: 0.35        # Random masking — forces global context understanding
-  hflip_p: 0.5                     # Horizontal flip — layout remains valid
-  vflip_p: 0.5                     # Vertical flip — layout remains valid
-  translate: [0.1, 0.1]            # Random translation (X, Y fraction) — degrees forced to 0
-  
-  # Random resized crop
-  random_crop_p: 0.3               # Probability of applying random resized crop
-  random_crop_scale: [0.5, 1.0]    # Crop area ratio range
-  random_crop_ratio: [0.75, 1.33]  # Aspect ratio range
+  sp_prob: 0.03
+  random_erasing_prob: 0.35
+  hflip_p: 0.5
+  vflip_p: 0.5
+  translate: [0.1, 0.1]
 
-# Model architecture
+  random_crop_p: 0.3
+  random_crop_scale: [0.5, 1.0]
+  random_crop_ratio: [0.75, 1.33]
+
+# Model architecture and latent-space dimensions.
 model:
-  class: "FullyConvVAE"            # NOUVEAU : Doit correspondre au nom de ta nouvelle classe
-  latent_dim: 14                   # NOUVEAU : Représente maintenant le nombre de CANAUX de la grille spatiale (16 est idéal)
-  input_channels: 1                # Grayscale images
-  dropout_p: 0.15                  # Higher dropout — small dataset needs more regularisation
+  class: "FullyConvVAE"  # Spatial-latent architecture.
+  latent_dim: 14  # Number of latent channels.
+  input_channels: 1
+  dropout_p: 0.15
 
-# Loss configuration
-# SimpleVAELoss (Fully Convolutional): L1 reconstruction + Spatial KL divergence
-#
-# Reconstruction is normalised per-pixel:
-#   recon = sum(|x - x̂| * mask) / num_valid_pixels
-# KLD is normalised per-spatial-volume to remain scale-invariant:
-#   kld   = mean_batch(sum_channels(KLD) / (H_latent * W_latent))
-#
-# Because KLD is now averaged spatially, beta_kld should typically be 
-# around 0.01 to 0.1. Warmup is crucial to let the local convolutions 
-# find the geometric structures before applying the compression tax.
+# Reconstruction and KL divergence balancing parameters.
 loss:
-  name: "l1"                     # 'l1' or 'mse'
-  beta_kld: 0.001                 # NOUVEAU : Rééquilibré pour la normalisation spatiale 3D
-  warmup_epochs: 0              # NOUVEAU : 10% du training pour construire les arêtes nettes d'abord
+  name: "l1"  # Reconstruction loss function.
+  beta_kld: 0.001  # KL regularization weight.
+  warmup_epochs: 0  # No KL warmup for this setup.
 
+# Optimizer and learning-rate scheduler parameters.
 optim:
   algo: AdamW
   params:
@@ -67,28 +56,27 @@ optim:
       max_lr: 0.0002
       pct_start: 0.25
 
-# Training optimization
 optimization:
-  accumulation_steps: 8          # Effective batch = 4 × 8 = 32 (critical for small dataset)
-  mixed_precision: true          # Automatic mixed precision for speed and memory
+  accumulation_steps: 8  # Effective batch size multiplier.
+  mixed_precision: true  # Enable AMP on CUDA.
 
-# Logging configuration
+# Logging frequency and artifact collection options.
 logging:
   logdir: "./logs"
   tensorboard: true
-  log_loss_components: true      # Log SSIM/gradient/KLD separately
+  log_loss_components: true
   save_reconstructions_every: 5
 
-# Training configuration
-nepochs: 100                      # More epochs for small dataset (OneCycleLR adapts automatically)
+# Total number of training epochs.
+nepochs: 100
 
-# Test (inference) configuration
+# Inference-time configuration.
 test:
   test_input_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"
   test_output_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/test"
-  model_path: "logs/FullyConvVAE_1/last_model.pt"  # À mettre à jour après le run
+  model_path: "logs/FullyConvVAE_1/last_model.pt"  # Checkpoint path.
 
-# Interpolation configuration
+# Latent interpolation command configuration.
 interpolate:
   image1_path: "dataset_supervised/dataset_supervised_pc/png_scaled/validation/wireframe_2925866.png"
   image2_path: "dataset_supervised/dataset_supervised_pc/png_scaled/validation/wireframe_3015001.png"
@@ -96,13 +84,13 @@ interpolate:
   num_steps: 10
   model_path: "logs/FullyConvVAE_1/last_model.pt"
 
-# Clustering configuration
+# Latent-space clustering command configuration.
 clustering:
   model_path: "logs/FullyConvVAE_8/last_model.pt"
   data_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"
-  output_dir: null
+  output_dir: null  # Null means save near the checkpoint.
   max_samples: 4000
   n_clusters: 9
   viz_method: "both"
   archetypes_dir: "dataset_supervised/archetypes_pc/png_scaled"
-  gt_json_dir: dataset_supervised/dataset_supervised_pc/json
+  gt_json_dir: dataset_supervised/dataset_supervised_pc/json  # Optional labels for external metrics.
