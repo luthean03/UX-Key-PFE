@@ -32,9 +32,9 @@ data:
 
 # Model architecture
 model:
-  class: "VAE"                   # Must match class in vae_models.py
-  latent_dim: 64                 # 73K images supports richer latent space (was 64)
-  input_channels: 1              # Grayscale images
+  class: "FullyConvVAE"            # NOUVEAU : Doit correspondre au nom de ta nouvelle classe
+  latent_dim: 16                   # NOUVEAU : Représente maintenant le nombre de CANAUX de la grille spatiale (16 est idéal)
+  input_channels: 1                # Grayscale images
   dropout_p: 0.15                # Light dropout — large dataset regularises itself
 
 # Loss configuration
@@ -62,15 +62,19 @@ optim:
     lr: 0.0002                   # Slightly lower peak LR for small dataset stability
     weight_decay: 0.0003         # Stronger decay to prevent overfitting on 17K images
   
-  # Learning rate scheduler
+optim:
+  algo: AdamW
+  params:
+    lr: 0.0002
+    weight_decay: 0.0003
   scheduler:
-    name: "OneCycleLR"           # Warmup + Cosine Decay (steps per batch)
+    name: OneCycleLR
     params:
-      max_lr: 0.0002             # Peak LR (match optim.params.lr)
-      pct_start: 0.15            # 25% warmup (shorter — smaller dataset converges faster)
-      div_factor: 25.0           # initial_lr = max_lr / 25 = 8e-6
-      final_div_factor: 1000.0   # min_lr = initial_lr / 1000 ≈ 8e-9
-      anneal_strategy: "cos"     # Cosine annealing after warmup
+      anneal_strategy: cos
+      div_factor: 25.0
+      final_div_factor: 1000.0
+      max_lr: 0.0002
+      pct_start: 0.25
 
 # Training optimization
 optimization:
@@ -85,7 +89,7 @@ logging:
   save_reconstructions_every: 5
 
 # Training configuration
-nepochs: 100
+nepochs: 50
 
 # Test (inference) configuration
 # Usage: python -m src.torchtmpl.main config/config-vae.yaml test
