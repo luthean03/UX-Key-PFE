@@ -31,7 +31,7 @@ data:
 # Model architecture and latent-space dimensions.
 model:
   class: "FullyConvVAE"  # Spatial-latent architecture.
-  latent_dim: 14  # Number of latent channels.
+  latent_dim: 6  # Number of latent channels.
   input_channels: 1
   dropout_p: 0.15
 
@@ -86,7 +86,7 @@ interpolate:
 
 # Latent-space clustering command configuration.
 clustering:
-  model_path: "logs/FullyConvVAE_8/last_model.pt"
+  model_path: "logs/FullyConvVAE_13/last_model.pt"
   data_dir: "dataset_supervised/dataset_supervised_pc/png_scaled/validation"
   output_dir: null  # Null means save near the checkpoint.
   max_samples: 4000
