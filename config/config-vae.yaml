@@ -31,7 +31,7 @@ data:
 # Model architecture and latent-space dimensions.
 model:
   class: "FullyConvVAE"  # Model class name resolved in the model factory.
-  latent_dim: 16  # Number of latent channels in the spatial bottleneck.
+  latent_dim: 6  # Number of latent channels in the spatial bottleneck.
   input_channels: 1  # Grayscale input.
   dropout_p: 0.15  # Dropout in decoder blocks.
 
@@ -92,10 +92,10 @@ interpolate:
 
 # Latent-space clustering command configuration.
 clustering:
-  model_path: "logs/VAE_6/last_model.pt"  # Encoder checkpoint used to produce latents.
+  model_path: "logs/VAE_13/last_model.pt"  # Encoder checkpoint used to produce latents.
   data_dir: "dataset/vae_dataset_pc/png_scaled/validation"  # Images to cluster.
   output_dir: null  # Null means output next to model checkpoint.
   max_samples: 4000  # Max points displayed in interactive visualization.
-  n_clusters: 15  # K for K-Means and GMM.
+  n_clusters: 9  # K for K-Means and GMM.
   viz_method: "both"  # pca, tsne, or both.
   archetypes_dir: "dataset/archetypes_pc/png_scaled"  # Optional reference samples.
